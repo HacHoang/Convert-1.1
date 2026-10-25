@@ -1,0 +1,6 @@
+{
+  "name": "TTV Translate - Trình Dịch & Convert Truyện",
+  "description": "Ứng dụng clone TTV Translate Android chuyên dịch và convert tiểu thuyết Trung - Hán Việt - Vietphrase, quản lý tệp Name, đọc truyện offline không cần đăng nhập.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

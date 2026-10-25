@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="convertGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="50%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1e1b4b"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <!-- Circular Base -->
+  <circle cx="256" cy="256" r="240" fill="url(#convertGrad)" filter="url(#shadow)"/>
+  <circle cx="256" cy="256" r="236" fill="none" stroke="#38bdf8" stroke-width="6" stroke-opacity="0.5"/>
+  
+  <!-- Stylized Open Book & Translate Glyph -->
+  <path d="M120 330c45-20 85-15 136 10 51-25 91-30 136-10V180c-45-20-85-15-136 10-51-25-91-30-136-10z" fill="#ffffff" fill-opacity="0.15" stroke="#ffffff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M256 190v150" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
+  
+  <!-- Bold C & Bilingual Symbol -->
+  <text x="256" y="275" font-family="system-ui, -apple-system, sans-serif" font-size="160" font-weight="900" fill="#ffffff" text-anchor="middle" dominant-baseline="middle">C</text>
+  <circle cx="340" cy="180" r="32" fill="#38bdf8"/>
+  <text x="340" y="185" font-family="system-ui, sans-serif" font-size="28" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">1.1</text>
+</svg>
