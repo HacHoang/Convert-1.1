@@ -4,12 +4,9 @@
  */
 
 import React, { useState } from 'react';
-import { useApp, AppTheme } from '../../context/AppContext';
+import { useApp } from '../../context/AppContext';
 import { speechService } from '../../utils/speechEngine';
 import { 
-  Settings, 
-  ShieldCheck, 
-  Type, 
   Volume2, 
   HardDrive, 
   Sparkles, 
@@ -89,37 +86,6 @@ export const SettingsView: React.FC = () => {
 
   return (
     <div className="flex-1 overflow-y-auto bg-neutral-950 text-neutral-100 p-4 sm:p-6 space-y-6">
-      {/* Offline Notice - Loại bỏ đăng nhập */}
-      <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-start gap-3.5 shadow-sm">
-        <div className="p-2.5 rounded-xl bg-cyan-950 text-cyan-400 border border-cyan-800/50 shrink-0">
-          <ShieldCheck size={22} />
-        </div>
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-bold text-neutral-100">
-              Hoàn Toàn Offline · Không Cần Đăng Nhập
-            </h3>
-            <span className="text-[10px] font-semibold text-emerald-400 px-1.5 py-0.2 rounded-sm bg-emerald-950 border border-emerald-800/40">
-              Mở khóa 100%
-            </span>
-          </div>
-          <p className="text-xs text-neutral-400 leading-relaxed">
-            Ứng dụng đã gỡ bỏ hoàn toàn màn hình đăng nhập tài khoản. Mọi tính năng: convert Vietphrase, cập nhật tệp Name, đọc Text-To-Speech và lưu tủ truyện đều hoạt động ngoại tuyến và được bảo mật trực tiếp trên thiết bị của bạn.
-          </p>
-        </div>
-      </div>
-
-      {/* Ghi chú chuyển Cài đặt kiểu chữ & màu sắc lên thanh trên */}
-      <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-2">
-        <div className="flex items-center gap-2 text-neutral-200 font-semibold text-sm">
-          <Type size={16} className="text-cyan-400" />
-          <span>Kiểu Chữ, Cỡ Chữ &amp; Màu Sắc</span>
-        </div>
-        <p className="text-xs text-neutral-400 leading-relaxed">
-          Đã được chuyển lên nút <strong className="text-cyan-300 font-serif">"Aa"</strong> ở thanh điều hướng phía trên cùng (ngay cạnh nút chuyển đổi giao diện Dark/Light/Theo thiết bị) để bạn có thể tùy chỉnh cỡ chữ, phông chữ và màu nền tức thì mọi lúc khi đang đọc!
-        </p>
-      </div>
-
       {/* Quy tắc dịch & Engine */}
       <div className="p-4 sm:p-5 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-3.5">
         <div className="flex items-center gap-2 text-neutral-200 font-semibold text-sm">

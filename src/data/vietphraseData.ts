@@ -271,4 +271,17 @@ export const DEFAULT_VIETPHRASE: Record<string, string> = {
   '萧家': 'Tiêu Gia',
   '云岚宗': 'Vân Lam Tông',
   '迦南学院': 'Già Nam Học Viện',
+
+  // Trợ từ & ngữ khí từ cốt lõi (Cơ chế QuickTranslator: bắt đầu bằng '/' để lược bỏ ở nghĩa chính)
+  '了': '/liễu/rồi',
+  '的': '/của/đích',
+  '着': '/lấy/đang',
+  '过': 'qua/từng/đã từng',
+  '得': 'được/đến',
+  '地': 'mà/địa',
+  '吗': 'sao/ư/à/không',
+  '吧': 'đi/thôi/nào/sao',
+  '呢': 'đâu/nhỉ/chứ/vậy',
+  '啊': 'a/hả/ô',
 };
+

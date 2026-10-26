@@ -572,10 +572,16 @@ for (const [char, pinyin, hanviet] of RAW_ENTRIES) {
   HANVIET_DICT[char] = { pinyin, hanviet };
 }
 
+import { CHINESE_PHIEN_AM_WORDS } from './quickTranslatorData';
+
 /**
  * Tra cứu âm Hán Việt cho 1 ký tự Trung Quốc
+ * Ưu tiên trọn bộ 12.571 ký tự gốc từ QuickTranslator
  */
 export function getHanVietChar(char: string): string {
+  if (CHINESE_PHIEN_AM_WORDS && CHINESE_PHIEN_AM_WORDS[char]) {
+    return CHINESE_PHIEN_AM_WORDS[char];
+  }
   if (HANVIET_DICT[char]) {
     return HANVIET_DICT[char].hanviet;
   }
@@ -591,3 +597,4 @@ export function getPinyinChar(char: string): string {
   }
   return '';
 }
+

@@ -1,151 +1,59 @@
-# Tối Ưu Thanh Menu 3 Gạch Ngang & Ngăn Kéo Điều Hướng (Google AI Studio Pattern)
+# Kế hoạch Tối ưu Giao diện chuẩn Google AI Studio & Tinh giản Trải nghiệm
 
-Kế hoạch thiết kế và tái cấu trúc toàn diện thanh menu 3 gạch (Side Drawer) theo đúng mẫu giao diện hiện đại trong ảnh chụp: tích hợp thẻ thống kê 3 block vuông (Sách trong giá, Sách đã đọc, Số giờ đọc) kèm nút bánh răng xóa dữ liệu, thanh tiện ích 4 nút với Cài Đặt nổi bật, và liên kết tài khoản Google ở dưới cùng hỗ trợ đăng nhập/đăng xuất.
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> Toàn bộ các lựa chọn đã được người dùng xác nhận thông qua câu hỏi khảo sát tương tác:
-
-- **Vị trí nút Menu 3 gạch**: Giữ nguyên vị trí hiện tại trên thanh tiêu đề chính (App Bar), bấm vào sẽ trượt mở ngăn kéo điều hướng cao cấp chuẩn phong cách ứng dụng hiện đại.
-- **Tài khoản Google dưới cùng**:
-  - Khi **chưa đăng nhập**: Hiển thị nút "Đăng nhập với Google" bo tròn với biểu tượng Google G.
-  - Khi **đã đăng nhập**: Hiển thị avatar tròn và email tài khoản (`readerheadless@gmail.com` hoặc email tùy chọn), kèm menu mở rộng để chuyển hoặc đăng xuất tài khoản.
-- **Thẻ nổi bật phía trên mục cài đặt**:
-  - Gồm 3 block vuông bo góc nhẹ:
-    1. **Số sách trong giá**: Đếm tổng số bộ truyện hiện có trong thư viện.
-    2. **Số sách đã đọc**: Đếm số sách đã mở đọc hoặc có tiến trình đọc.
-    3. **Số giờ đã đọc**: Tổng thời gian đọc truyện được tích lũy theo thời gian thực (đơn vị giờ/phút).
-  - Góc cạnh thanh thống kê có **1 bánh răng bé xíu**, bấm vào hiển thị popup với tùy chọn **"Xóa thống kê"** (đặt lại số sách đã đọc và số giờ đọc về 0).
-- **Thanh tiện ích & Cài đặt (ngay trên phần tài khoản)**:
-  - Thanh hàng ngang 4 biểu tượng tiện ích theo mẫu: `[Thông báo]` - `[Cài đặt]` - `[Tìm kiếm nhanh]` - `[Phím tắt/Key]`.
-  - Nút **Cài đặt** điều hướng trực tiếp đến trang Cài Đặt hoặc mở bảng điều khiển cấu hình ứng dụng.
+Tái cấu trúc và nâng cấp toàn bộ giao diện ứng dụng sang phong cách công nghệ cao, tối giản và tập trung cao độ vào nội dung theo ngôn ngữ thiết kế của Google AI Studio (`#131314`, viền hairline mảnh `border-zinc-800`, font sans & mono sắc nét, không gian thao tác thông thoáng).
 
 ---
 
-## 1. Overview & Core Concept
+## 1. Mục tiêu và Thay đổi cốt lõi
 
-- **Mục tiêu**: Nâng cấp toàn diện menu ngăn kéo điều hướng (Side Drawer) từ giao diện cơ bản lên tiêu chuẩn thiết kế chuyên nghiệp, đậm chất công nghệ giống thanh bên của Google AI Studio trong ảnh đính kèm.
-- **Đối tượng sử dụng**: Độc giả đọc và convert truyện chữ, tiểu thuyết tiếng Trung, dịch giả và người biên tập cần giao diện tinh giản, tiện dụng, xem nhanh chỉ số đọc và chuyển đổi tính năng mượt mà.
-- **Giá trị mang lại**: Trải nghiệm điều hướng chuẩn mực, quản lý tiến độ đọc trực quan, hỗ trợ tài khoản Google linh hoạt và truy cập nhanh cài đặt hệ thống chỉ với một chạm.
+### 1.1 Tinh gọn Bảng điều khiển Giao diện (Theme Popover)
+- **Đổi tên nhãn**: Rút ngắn toàn bộ các cụm `"màu sắc giao diện & nền đọc"` thành `"Giao diện"`.
+- **Rút gọn các tùy chọn màu nền**: Thay vì nhiều thẻ màu rải rác, gom gọn chuẩn xác thành 4 chế độ:
+  1. **Sáng (Light)**: Nền trắng sạch, chữ tối tương phản cao.
+  2. **Tối (Dark)**: Nền tối chuẩn AI Studio (`#131314`), chữ xám sáng dịu mắt.
+  3. **Sepia (Retro)**: Nền giấy vàng ấm cổ điển, chống mỏi mắt khi đọc lâu.
+  4. **Hệ thống (Auto)**: Tự động đồng bộ theo chế độ sáng/tối của hệ điều hành.
+- **Loại bỏ văn bản thừa**: Xóa bỏ các dòng giải thích dư thừa như `"Bấm lại icon Theme để đóng bảng màu"`, các câu hướng dẫn vụn vặt ở chân popover.
 
----
+### 1.2 Thiết kế Popover chuẩn Google AI Studio
+- Sử dụng bo góc tinh tế (`rounded-xl`), viền mảnh sắc sảo (`border border-zinc-800/90`), bóng mờ nhẹ (`shadow-2xl shadow-black/40`), hiệu ứng backdrop blur kính mờ nhẹ.
+- Các nút chọn theme hiển thị dạng danh sách / lưới 2x2 hoặc list item kèm indicator dot / checkmark tinh tế.
+- Giữ lại tooltip ngắn gọn, hiển thị mượt mà khi người dùng hover qua các nút công cụ trên thanh header.
 
-## 2. User Experience & Visual Design
-
-### 2.1 Cấu Trúc Ngăn Kéo (Side Drawer) Theo Mẫu Mới
-
-Ngăn kéo trượt hiển thị từ cạnh màn hình với nền tối chuẩn studio (`#121316` / `bg-neutral-950`), viền hairline sắc nét:
-
-1. **Header Drawer**:
-   - Tên thương hiệu: **Convert** (kèm badge phiên bản `v1.1` tinh gọn).
-   - Nút thu nhỏ / đóng ngăn kéo (icon hamburger gập hoặc dấu đóng thanh lịch).
-2. **Khu Vực Điều Hướng Phân Nhóm (Categorized Navigation)**:
-   - Nhóm 1: `KHÁM PHÁ` (EXPLORE)
-     - **Dịch Nhanh**: Biểu tượng Play / Chuyển ngữ. Trạng thái active có nền mờ pill `bg-neutral-800` chữ trắng nổi bật.
-     - **Lịch Sử Dịch**: Biểu tượng đồng hồ / lịch sử convert các đoạn văn.
-   - Nhóm 2: `TỦ TRUYỆN & DỮ LIỆU` (BUILD)
-     - **Tủ Truyện**: Biểu tượng giá sách / thư mục truyện.
-     - **Quản Lý Từ Điển**: Biểu tượng dấu sách / kho Vietphrase & Hán Việt.
-     - **Tệp Name Riêng**: Biểu tượng danh sách từ riêng.
-   - Nhóm 3: `QUẢN LÝ & HỆ THỐNG` (MANAGE)
-     - **Bảng Điều Khiển**: Tổng quan hệ thống dữ liệu offline.
-     - **Hướng Dẫn Sử Dụng**: Xem mẹo phím tắt & hướng dẫn nạp từ điển nhanh (kèm mũi tên `>`).
-3. **Thẻ Thống Kê Đọc Truyện (Feature Stat Card)**:
-   - Nằm ngay phía trên thanh công cụ cài đặt.
-   - Thiết kế dạng khung nâng nổi (`bg-[#1c1d1f] border border-neutral-800 rounded-2xl p-3.5`).
-   - Tiêu đề nhỏ: "Thống Kê Đọc Truyện" cùng **1 bánh răng bé xíu** ở góc phải.
-   - Hàng 3 block vuông bo cong nhẹ:
-     - Block 1: `[ 📚 Sách trong giá: X ]`
-     - Block 2: `[ 📖 Sách đã đọc: Y ]`
-     - Block 3: `[ ⏱️ Giờ đã đọc: Z.Zh ]`
-   - Bấm vào bánh răng bé xíu: Hiện popup dropdown xác nhận **"Xóa thống kê"** (Reset chỉ số đọc).
-4. **Thanh Công Cụ 4 Nút (Tiện Ích & Cài Đặt)**:
-   - Nằm ngay trên phần tài khoản Google.
-   - 4 nút vuông tròn bo góc thanh lịch:
-     - 🔔 **Thông báo**: Xem thông báo bản cập nhật offline.
-     - ⚙️ **Cài đặt**: Chuyển ngay đến tab Cài Đặt (hoặc mở cấu hình giao diện).
-     - 🔍 **Tìm kiếm nhanh**: Mở thanh tra từ nhanh hoặc tìm truyện.
-     - 🔑 **Phím tắt**: Bảng tra cứu phím tắt dịch nhanh.
-5. **Mục Dưới Cùng: Liên Kết Tài Khoản Google**:
-   - Viên thuốc (pill container) sang trọng ở đáy ngăn kéo (`bg-[#1a1b1e] border border-neutral-800/80 rounded-2xl p-2.5`).
-   - **Chưa đăng nhập**: Nút "Đăng nhập với Google" với biểu tượng chữ G nhiều màu hoặc đơn sắc, bấm vào mở modal/luồng đăng nhập nhanh một chạm.
-   - **Đã đăng nhập**: Avatar ảnh đại diện tròn + tên email `readerheadless@gmail.com` (hoặc email đăng nhập), bấm vào có menu xem chi tiết tài khoản hoặc "Đăng xuất".
+### 1.3 Rà soát & Loại bỏ các ghi chú rườm rà trên toàn ứng dụng
+- Quét qua toàn bộ Header, Control Bar, Modal Tra từ điển, Danh sách Name/Vietphrase, Trình đọc truyện:
+  - Loại bỏ các text hướng dẫn thừa thãi, placeholder dài dòng.
+  - Tối ưu các tiêu đề modal thành tên tính năng ngắn gọn, trực diện (VD: "Từ điển cá nhân", "Cài đặt hiển thị").
+  - Đảm bảo giao diện thông thoáng, tối đa hóa không gian đọc và dịch thuật.
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+## 2. Các tệp tin cần thực hiện thay đổi
 
-- **Lưu trữ dữ liệu thống kê đọc truyện (Reading Analytics)**:
-  - Tự động tích lũy thời gian đọc khi người dùng ở trong chế độ xem truyện / đọc dịch (sử dụng timer an toàn `visibilitychange` & `activeTab`).
-  - Lưu trữ trực tiếp trong `localStorage` qua `AppContext` để không bị mất khi reload trang.
-- **Trạng thái tài khoản Google**:
-  - Hỗ trợ lưu trữ tài khoản người dùng trực tiếp trong ứng dụng (`googleUser: { email, name, avatar, isLoggedIn }`). Mặc định đồng bộ với tài khoản môi trường hiện tại (`readerheadless@gmail.com`) khi kích hoạt đăng nhập.
-  - Khi chưa đăng nhập: Cung cấp nút đăng nhập trực quan không gây phiền phức.
-- **Khả năng tương thích Responsive & Khung điện thoại**:
-  - Ngăn kéo mở mượt mà trên cả giao diện di động lẫn giao diện máy tính mở rộng, tuân thủ quy tắc kích thước vùng bấm tối thiểu $\ge 44\text{px}$.
+1. **`src/components/Header.tsx`**:
+   - Cập nhật nút bấm: nhãn tooltip `"Giao diện"`.
+   - Cập nhật popup Theme: hiển thị 4 tùy chọn chuẩn `"Sáng (Light)"`, `"Tối (Dark)"`, `"Sepia (Retro)"`, `"Hệ thống (Auto)"`.
+   - Xóa bỏ câu hướng dẫn `"Bấm lại icon Theme để đóng bảng màu"` và các text thừa.
+   - Thêm tooltip ngắn gọn cho tất cả các nút công cụ (Giao diện, Cỡ chữ Aa, Từ điển, Xuất file, v.v.).
 
----
+2. **`src/types/index.ts` & `src/App.tsx`**:
+   - Tối ưu trạng thái Theme (`light` | `dark` | `sepia` | `system`) để tương thích hoàn hảo với 4 tùy chọn mới.
+   - Đồng bộ class nền và màu chữ trên toàn bộ `App.tsx` theo chuẩn Google AI Studio dark mode.
 
-## 4. Technical Architecture & Data Strategy
-
-### 4.1 System Diagram
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       Top App Bar                           │
-│  [3-line Menu Button]   Convert 1.1        [Aa] [Theme] [🖥] │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ Click mở Drawer
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                Navigation Side Drawer (Mẫu Mới)             │
-│                                                             │
-│  [Logo / Convert 1.1]                           [Close X]   │
-│  ─────────────────────────────────────────────────────────  │
-│  EXPLORE / KHÁM PHÁ                                         │
-│    • Dịch Nhanh (Playground active style)                   │
-│    • Lịch Sử Dịch                                           │
-│                                                             │
-│  BUILD / DỮ LIỆU                                            │
-│    • Tủ Truyện Thư Viện                                     │
-│    • Quản Lý Từ Điển Vietphrase                             │
-│    • Tệp Name Cá Nhân                                       │
-│                                                             │
-│  MANAGE / HỆ THỐNG                                          │
-│    • Bảng Điều Khiển                                        │
-│    • Hướng Dẫn Sử Dụng                                   >  │
-│                                                             │
-│  ─────────────────────────────────────────────────────────  │
-│  [Thẻ Thống Kê 3 Block Vuông]             [⚙️ Bánh răng nhỏ]│
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │ Sách trong   │  │ Sách đã đọc  │  │ Giờ đã đọc   │       │
-│  │    giá: 4    │  │      2       │  │    1.8h      │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
-│  ─────────────────────────────────────────────────────────  │
-│  [Thanh Tiện Ích: 🔔 Thông báo | ⚙️ Cài Đặt | 🔍 Tìm | 🔑 Key]│
-│  ─────────────────────────────────────────────────────────  │
-│  [Tài Khoản Google: Avatar + readerheadless@gmail.com]      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 4.2 State Additions in `AppContext`
-
-- `readingStats`: `{ totalReadBooks: number, totalReadMinutes: number }`
-- `resetReadingStats()`: Đặt lại `totalReadBooks = 0` và `totalReadMinutes = 0`.
-- `googleAccount`: `{ isLoggedIn: boolean, email: string, name: string, avatarUrl: string }`
-- `loginWithGoogle(email?: string)` / `logoutGoogle()`
+3. **`src/components/FontSizeSettings.tsx` & Các Dialog/Popover khác**:
+   - Tinh gọn popup Cỡ chữ `Aa`: chỉ giữ thanh trượt kích cỡ, khoảng cách dòng, độ rộng văn bản trực quan; loại bỏ chú thích thừa.
+   - Thống nhất phong cách popover công nghệ cao viền mảnh.
 
 ---
 
-## 5. Verification Plan
-
-1. **Kiểm tra giao diện ngăn kéo**:
-   - Mở menu 3 gạch, xác nhận hiển thị chính xác các phân nhóm danh mục, thẻ 3 khối vuông thống kê với bánh răng nhỏ.
-   - Thử bấm bánh răng nhỏ -> popup hiện lên -> bấm "Xóa thống kê" -> các chỉ số trở về 0.
-2. **Kiểm tra thanh Cài đặt**:
-   - Bấm icon bánh răng Cài đặt trong thanh 4 nút tiện ích -> chuyển ngay đến màn hình Cài Đặt thành công.
-3. **Kiểm tra liên kết tài khoản Google**:
-   - Bấm đăng nhập -> chuyển sang hiển thị email `readerheadless@gmail.com` kèm avatar.
-   - Bấm vào tài khoản đã đăng nhập -> tùy chọn Đăng xuất -> chuyển về trạng thái Chưa đăng nhập.
-4. **Kiểm tra build**: Chạy `compile_applet` và `lint_applet` đảm bảo 0 lỗi biên dịch.
+## 4. Trạng thái Hoàn thành (Completed)
+- [x] Đã đổi tên nhãn và tooltip từ `"màu sắc giao diện & nền đọc"` thành `"Giao diện"`.
+- [x] Đã tinh chỉnh và tối ưu popup Giao diện: rút gọn thành đúng 4 tùy chọn sạch sẽ:
+  - `"Sáng (Light)"`
+  - `"Tối (Dark)"`
+  - `"Sepia (Retro)"`
+  - `"Hệ thống (Auto)"`
+- [x] Đã loại bỏ hoàn toàn câu giải thích thừa `"Bấm lại icon Theme để đóng bảng màu"` và các text chú thích dư thừa.
+- [x] Đã thiết kế lại popover Giao diện và Kiểu chữ & Cỡ chữ (Aa) theo chuẩn phong cách Google AI Studio: viền hairline mảnh `border-zinc-800`, nền tối `bg-[#18181b]/98` backdrop-blur-md, các nút gọn gàng với checkmark tinh tế.
+- [x] Giữ lại các tooltip ngắn gọn, sắc nét khi rê chuột qua các nút công cụ.
+- [x] Kiểm tra và xác thực thành công cả `tsc --noEmit` và `npm run build` không lỗi.

@@ -39,8 +39,10 @@ import {
   User,
   CheckCircle2,
   Sliders,
-  HelpCircle
+  HelpCircle,
+  Database
 } from 'lucide-react';
+
 
 export const AndroidHeader: React.FC = () => {
   const { 
@@ -49,6 +51,7 @@ export const AndroidHeader: React.FC = () => {
     activeTab, 
     setActiveTab,
     namesList,
+    vietphraseMap,
     novelsList,
     savedChapters,
     readingStats,
@@ -57,6 +60,7 @@ export const AndroidHeader: React.FC = () => {
     loginWithGoogle,
     logoutGoogle
   } = useApp();
+
 
   const [currentTime, setCurrentTime] = useState('12:00');
   const [isAaMenuOpen, setIsAaMenuOpen] = useState(false);
@@ -177,8 +181,18 @@ export const AndroidHeader: React.FC = () => {
     });
   };
 
-  const handleSelectNav = (tab: AppTab) => {
+  const [currentNavTitle, setCurrentNavTitle] = useState<string>('Dịch Nhanh');
+
+  const handleSelectNav = (tab: AppTab, title?: string) => {
     setActiveTab(tab);
+    if (title) {
+      setCurrentNavTitle(title);
+    } else {
+      if (tab === 'translate') setCurrentNavTitle('Dịch Nhanh');
+      else if (tab === 'library') setCurrentNavTitle('Thư Viện');
+      else if (tab === 'dictionary') setCurrentNavTitle('Quản Lý Từ Điển');
+      else if (tab === 'settings') setCurrentNavTitle('Cài Đặt');
+    }
     setIsDrawerOpen(false);
   };
 
@@ -203,46 +217,30 @@ export const AndroidHeader: React.FC = () => {
     showToast('Đã đăng xuất tài khoản Google.');
   };
 
-  const themes: { id: AppTheme; label: string; desc: string; bg: string; text: string; dot: string }[] = [
-    { 
-      id: 'dark', 
-      label: 'Tối', 
-      desc: 'Nền đen xám chống mỏi mắt', 
-      bg: 'bg-neutral-900 border-neutral-700', 
-      text: 'text-neutral-100',
-      dot: 'bg-neutral-800 border-neutral-600'
-    },
+  const themes: { id: AppTheme; label: string; bg: string; text: string }[] = [
     { 
       id: 'light', 
-      label: 'Sáng', 
-      desc: 'Nền trắng ngà thanh lịch', 
-      bg: 'bg-white border-slate-300', 
-      text: 'text-slate-900',
-      dot: 'bg-white border-slate-400'
+      label: 'Sáng (Light)', 
+      bg: 'bg-white border-zinc-300', 
+      text: 'text-zinc-900',
+    },
+    { 
+      id: 'dark', 
+      label: 'Tối (Dark)', 
+      bg: 'bg-[#121212] border-zinc-700', 
+      text: 'text-zinc-100',
     },
     { 
       id: 'sepia', 
-      label: 'Giấy Cổ', 
-      desc: 'Nền vàng ấm cổ điển', 
-      bg: 'bg-[#f4ecd8] border-[#e2d5b8]', 
-      text: 'text-[#5b4636]',
-      dot: 'bg-[#f4ecd8] border-[#d4c39e]'
+      label: 'Sepia (Retro)', 
+      bg: 'bg-[#FBF0D9] border-[#e2d5b8]', 
+      text: 'text-[#4A3525]',
     },
     { 
-      id: 'mint', 
-      label: 'Xanh Mint', 
-      desc: 'Nền xanh dịu mắt thư giãn', 
-      bg: 'bg-[#eef7ee] border-[#cce4cc]', 
-      text: 'text-[#1d432b]',
-      dot: 'bg-[#eef7ee] border-[#a3cfa3]'
-    },
-    { 
-      id: 'amoled', 
-      label: 'AMOLED', 
-      desc: 'Đen tuyệt đối tiết kiệm pin', 
-      bg: 'bg-black border-neutral-800', 
-      text: 'text-white',
-      dot: 'bg-black border-neutral-700'
+      id: 'system', 
+      label: 'Hệ thống (Auto)', 
+      bg: 'bg-gradient-to-tr from-zinc-800 to-zinc-200 border-zinc-600', 
+      text: 'text-cyan-400',
     },
   ];
 
@@ -271,8 +269,8 @@ export const AndroidHeader: React.FC = () => {
 
       {/* Main App Bar */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-2">
-        {/* Bên Trái: Nút Menu 3 gạch giữ nguyên vị trí hiện tại + Tên Convert 1.1 */}
-        <div className="flex items-center gap-2">
+        {/* Bên Trái: Nút Menu 3 gạch giữ nguyên vị trí hiện tại + Tên nút vừa được ấn */}
+        <div className="flex items-center gap-2.5">
           {/* Nút Menu 3 gạch mở Navigation Drawer */}
           <button
             onClick={() => setIsDrawerOpen(true)}
@@ -283,17 +281,14 @@ export const AndroidHeader: React.FC = () => {
             <Menu size={18} className="group-hover:scale-105 transition-transform" />
           </button>
 
-          {/* Logo Title & Version */}
+          {/* Tên nút vừa được ấn hiển thị trực tiếp bên cạnh nút menu */}
           <div 
-            onClick={() => setActiveTab('translate')}
+            onClick={() => handleSelectNav('translate', 'Dịch Nhanh')}
             className="flex items-center gap-1.5 cursor-pointer group select-none"
           >
             <h1 className="text-base font-bold tracking-tight text-white leading-none group-hover:text-cyan-300 transition-colors">
-              Convert
+              {currentNavTitle}
             </h1>
-            <span className="text-[10px] text-cyan-400 font-mono font-semibold px-1.5 py-0.5 rounded-md bg-cyan-950/80 border border-cyan-800/60 leading-none">
-              1.1
-            </span>
           </div>
         </div>
 
@@ -314,36 +309,34 @@ export const AndroidHeader: React.FC = () => {
             <span className="font-serif font-bold text-sm leading-none">Aa</span>
           </button>
 
-          {/* Nút Theme Popup: Màu sắc giao diện & nền đọc */}
+          {/* Nút Theme Popup: Giao diện */}
           <button
             ref={themeBtnRef}
             onClick={toggleThemeMenu}
             className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
               isThemeMenuOpen
-                ? 'bg-cyan-600 border-cyan-500 text-white shadow-xs'
-                : 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-200'
+                ? 'bg-zinc-800 border-cyan-500 text-cyan-400 shadow-xs'
+                : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 text-zinc-300 hover:text-white'
             }`}
-            title="Màu sắc giao diện & nền đọc"
-            aria-label="Màu sắc giao diện và nền đọc"
+            title="Giao diện"
+            aria-label="Giao diện"
           >
             {settings.theme === 'light' ? (
-              <Sun size={16} className={isThemeMenuOpen ? 'text-white' : 'text-amber-400'} />
+              <Sun size={16} className={isThemeMenuOpen ? 'text-cyan-400' : 'text-amber-400'} />
             ) : settings.theme === 'sepia' ? (
-              <Palette size={16} className={isThemeMenuOpen ? 'text-white' : 'text-amber-300'} />
-            ) : settings.theme === 'mint' ? (
-              <Palette size={16} className={isThemeMenuOpen ? 'text-white' : 'text-emerald-400'} />
+              <Palette size={16} className={isThemeMenuOpen ? 'text-cyan-400' : 'text-amber-300'} />
             ) : settings.theme === 'system' ? (
-              <Laptop size={16} className={isThemeMenuOpen ? 'text-white' : 'text-cyan-400'} />
+              <Laptop size={16} className={isThemeMenuOpen ? 'text-cyan-400' : 'text-cyan-400'} />
             ) : (
-              <Moon size={16} className={isThemeMenuOpen ? 'text-white' : 'text-neutral-300'} />
+              <Moon size={16} className={isThemeMenuOpen ? 'text-cyan-400' : 'text-zinc-300'} />
             )}
           </button>
 
           {/* Nút Khung điện thoại / Toàn màn hình */}
           <button
             onClick={toggleDisplayMode}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors hidden sm:block border border-transparent hover:border-neutral-700"
-            title={settings.displayMode === 'mobile_frame' ? 'Mở rộng toàn màn hình' : 'Thu nhỏ giao diện chuẩn điện thoại'}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors hidden sm:block border border-transparent hover:border-zinc-700"
+            title={settings.displayMode === 'mobile_frame' ? 'Toàn màn hình' : 'Khung điện thoại'}
           >
             {settings.displayMode === 'mobile_frame' ? <Monitor size={16} /> : <Smartphone size={16} />}
           </button>
@@ -354,32 +347,33 @@ export const AndroidHeader: React.FC = () => {
       {isAaMenuOpen && (
         <div 
           ref={aaMenuRef}
-          className="absolute right-3 top-full mt-1.5 w-80 sm:w-88 rounded-2xl bg-neutral-900 border border-neutral-700 shadow-2xl p-4 text-neutral-100 z-50 animate-in fade-in zoom-in-95 duration-150 space-y-3.5"
+          className="absolute right-3 top-full mt-2 w-72 rounded-xl bg-[#18181b]/98 backdrop-blur-md border border-zinc-800 shadow-2xl p-3 text-zinc-100 z-50 animate-in fade-in zoom-in-95 duration-150 space-y-3"
         >
           {/* Header */}
-          <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
-            <div className="flex items-center gap-1.5">
-              <Type size={16} className="text-cyan-400" />
-              <span className="text-xs font-bold text-neutral-200">Kiểu Chữ &amp; Cỡ Chữ</span>
+          <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80">
+            <div className="flex items-center gap-2">
+              <Type size={14} className="text-cyan-400" />
+              <span className="text-xs font-semibold text-zinc-200">Kiểu chữ &amp; Cỡ chữ</span>
             </div>
             <button
               onClick={() => setIsAaMenuOpen(false)}
-              className="p-1 text-neutral-400 hover:text-white rounded-md cursor-pointer"
+              className="p-1 text-zinc-400 hover:text-white rounded-md cursor-pointer transition-colors"
+              title="Đóng"
             >
-              <X size={15} />
+              <X size={14} />
             </button>
           </div>
 
-          {/* 1. Cỡ chữ (A- / A+ / Slider) */}
+          {/* 1. Cỡ chữ */}
           <div>
-            <div className="flex items-center justify-between text-[11px] font-medium text-neutral-400 mb-1.5">
-              <span>Cỡ chữ đọc truyện:</span>
-              <span className="text-cyan-400 font-mono font-semibold">{settings.fontSize}px</span>
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1.5">
+              <span>Cỡ chữ:</span>
+              <span className="text-cyan-400 font-mono font-medium">{settings.fontSize}px</span>
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => updateSettings({ fontSize: Math.max(13, settings.fontSize - 1) })}
-                className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold text-xs flex items-center justify-center transition-colors cursor-pointer"
+                className="w-7 h-7 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-zinc-200 font-semibold text-xs flex items-center justify-center transition-colors cursor-pointer"
                 title="Giảm cỡ chữ"
               >
                 A-
@@ -391,11 +385,11 @@ export const AndroidHeader: React.FC = () => {
                 step="1"
                 value={settings.fontSize}
                 onChange={(e) => updateSettings({ fontSize: Number(e.target.value) })}
-                className="flex-1 accent-cyan-500 cursor-pointer"
+                className="flex-1 accent-cyan-500 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
               />
               <button
                 onClick={() => updateSettings({ fontSize: Math.min(26, settings.fontSize + 1) })}
-                className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold text-sm flex items-center justify-center transition-colors cursor-pointer"
+                className="w-7 h-7 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-zinc-200 font-semibold text-xs flex items-center justify-center transition-colors cursor-pointer"
                 title="Tăng cỡ chữ"
               >
                 A+
@@ -403,54 +397,59 @@ export const AndroidHeader: React.FC = () => {
             </div>
           </div>
 
-          {/* 2. Kiểu phông chữ */}
+          {/* 2. Phông chữ */}
           <div>
-            <label className="block text-[11px] font-medium text-neutral-400 mb-1.5">
-              Phông chữ:
-            </label>
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="text-xs text-zinc-400 mb-1.5">Phông chữ:</div>
+            <div className="grid grid-cols-2 gap-1.5 text-xs">
               <button
                 onClick={() => updateSettings({ fontFamily: 'sans' })}
-                className={`py-1.5 px-2.5 rounded-lg border font-sans text-center transition-colors cursor-pointer ${
+                className={`py-1.5 px-2 rounded-lg border font-sans text-center transition-colors cursor-pointer ${
                   settings.fontFamily === 'sans'
-                    ? 'bg-cyan-600 border-cyan-500 text-white font-bold shadow-xs'
-                    : 'bg-neutral-950 border-neutral-800 text-neutral-300 hover:text-white'
+                    ? 'bg-zinc-800 border-cyan-500/60 text-cyan-300 font-medium shadow-xs'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:text-zinc-200'
                 }`}
+                title="Phông Sans-Serif"
               >
-                Sans-Serif (Hiện đại)
+                Sans-Serif
               </button>
 
               <button
                 onClick={() => updateSettings({ fontFamily: 'serif' })}
-                className={`py-1.5 px-2.5 rounded-lg border font-serif text-center transition-colors cursor-pointer ${
+                className={`py-1.5 px-2 rounded-lg border font-serif text-center transition-colors cursor-pointer ${
                   settings.fontFamily === 'serif'
-                    ? 'bg-cyan-600 border-cyan-500 text-white font-bold shadow-xs'
-                    : 'bg-neutral-950 border-neutral-800 text-neutral-300 hover:text-white'
+                    ? 'bg-zinc-800 border-cyan-500/60 text-cyan-300 font-medium shadow-xs'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:text-zinc-200'
                 }`}
+                title="Phông Serif"
               >
-                Serif (Tiểu thuyết)
+                Serif
               </button>
             </div>
           </div>
 
           {/* 3. Giãn dòng */}
           <div>
-            <div className="flex items-center justify-between text-[11px] font-medium text-neutral-400 mb-1">
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
               <span>Khoảng cách dòng:</span>
-              <span className="text-cyan-400 font-mono font-semibold">{settings.lineHeight}x</span>
+              <span className="text-cyan-400 font-mono font-medium">{settings.lineHeight}x</span>
             </div>
             <div className="grid grid-cols-3 gap-1.5 text-xs">
-              {[1.4, 1.7, 2.0].map(lh => (
+              {[
+                { val: 1.4, label: 'Vừa' },
+                { val: 1.7, label: 'Thoáng' },
+                { val: 2.0, label: 'Rộng' }
+              ].map(item => (
                 <button
-                  key={lh}
-                  onClick={() => updateSettings({ lineHeight: lh })}
+                  key={item.val}
+                  onClick={() => updateSettings({ lineHeight: item.val })}
                   className={`py-1 rounded-lg border text-center transition-colors cursor-pointer ${
-                    settings.lineHeight === lh
-                      ? 'bg-cyan-600/80 border-cyan-500 text-white font-semibold'
-                      : 'bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-neutral-200'
+                    settings.lineHeight === item.val
+                      ? 'bg-zinc-800 border-cyan-500/60 text-cyan-300 font-medium'
+                      : 'bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:text-zinc-200'
                   }`}
+                  title={`${item.label} (${item.val}x)`}
                 >
-                  {lh === 1.4 ? 'Vừa' : lh === 1.7 ? 'Thoáng' : 'Rộng'}
+                  {item.label}
                 </button>
               ))}
             </div>
@@ -458,66 +457,60 @@ export const AndroidHeader: React.FC = () => {
         </div>
       )}
 
-      {/* POPUP 2: Màu Sắc Giao Diện & Nền Đọc */}
+      {/* POPUP 2: Giao diện */}
       {isThemeMenuOpen && (
         <div 
           ref={themeMenuRef}
-          className="absolute right-3 top-full mt-1.5 w-76 sm:w-84 rounded-2xl bg-neutral-900 border border-neutral-700 shadow-2xl p-4 text-neutral-100 z-50 animate-in fade-in zoom-in-95 duration-150 space-y-3"
+          className="absolute right-3 top-full mt-2 w-64 rounded-xl bg-[#18181b]/98 backdrop-blur-md border border-zinc-800 shadow-2xl p-2.5 text-zinc-100 z-50 animate-in fade-in zoom-in-95 duration-150 space-y-1.5"
         >
           {/* Header */}
-          <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
-            <div className="flex items-center gap-1.5">
-              <Palette size={16} className="text-cyan-400" />
-              <span className="text-xs font-bold text-neutral-200">Màu Sắc Giao Diện &amp; Nền Đọc</span>
+          <div className="flex items-center justify-between px-1.5 pb-2 border-b border-zinc-800/80 mb-1">
+            <div className="flex items-center gap-2">
+              <Palette size={14} className="text-cyan-400" />
+              <span className="text-xs font-semibold text-zinc-200">Giao diện</span>
             </div>
             <button
               onClick={() => setIsThemeMenuOpen(false)}
-              className="p-1 text-neutral-400 hover:text-white rounded-md cursor-pointer"
+              className="p-1 text-zinc-400 hover:text-white rounded-md cursor-pointer transition-colors"
+              title="Đóng"
             >
-              <X size={15} />
+              <X size={14} />
             </button>
           </div>
 
-          {/* Danh sách 5 chế độ màu sắc giao diện & nền đọc */}
-          <div className="space-y-1.5">
+          {/* Danh sách 4 chế độ: Sáng (Light), Tối (Dark), Sepia (Retro), Hệ thống (Auto) */}
+          <div className="space-y-1">
             {themes.map(t => {
               const isSelected = settings.theme === t.id;
               return (
                 <button
                   key={t.id}
-                  onClick={() => updateSettings({ theme: t.id })}
-                  className={`w-full p-2 rounded-xl border flex items-center justify-between transition-all cursor-pointer ${
+                  onClick={() => {
+                    updateSettings({ theme: t.id });
+                    setIsThemeMenuOpen(false);
+                  }}
+                  className={`w-full px-2.5 py-2 rounded-lg border flex items-center justify-between transition-all cursor-pointer ${
                     isSelected 
-                      ? 'ring-2 ring-cyan-500 bg-neutral-800/90 border-cyan-500/60 shadow-sm' 
-                      : 'bg-neutral-950/70 border-neutral-800 hover:bg-neutral-800/60 hover:border-neutral-700'
+                      ? 'bg-zinc-800/90 border-cyan-500/60 text-white shadow-xs' 
+                      : 'bg-zinc-900/60 border-zinc-800/80 text-zinc-300 hover:bg-zinc-800/60 hover:text-white hover:border-zinc-700'
                   }`}
+                  title={t.label}
                 >
                   <div className="flex items-center gap-2.5">
-                    <div className={`w-6 h-6 rounded-lg border flex items-center justify-center shrink-0 ${t.bg}`}>
-                      <span className={`text-[10px] font-bold ${t.text}`}>A</span>
+                    <div className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${t.bg}`}>
+                      <span className={`text-[9px] font-bold ${t.text}`}>A</span>
                     </div>
-                    <div className="text-left">
-                      <div className="text-xs font-semibold text-neutral-200 leading-tight">
-                        {t.label}
-                      </div>
-                      <div className="text-[10px] text-neutral-400 leading-tight">
-                        {t.desc}
-                      </div>
-                    </div>
+                    <span className="text-xs font-medium tracking-tight">
+                      {t.label}
+                    </span>
                   </div>
 
                   {isSelected && (
-                    <div className="w-5 h-5 rounded-full bg-cyan-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                      <Check size={12} strokeWidth={3} />
-                    </div>
+                    <Check size={14} className="text-cyan-400 shrink-0" strokeWidth={2.5} />
                   )}
                 </button>
               );
             })}
-          </div>
-
-          <div className="pt-1 text-[10.5px] text-neutral-500 text-center border-t border-neutral-800">
-            Bấm lại icon Theme để đóng bảng màu
           </div>
         </div>
       )}
@@ -577,7 +570,7 @@ export const AndroidHeader: React.FC = () => {
 
                 {/* Dịch Nhanh (Playground pattern) */}
                 <button
-                  onClick={() => handleSelectNav('translate')}
+                  onClick={() => handleSelectNav('translate', 'Dịch Nhanh')}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
                     activeTab === 'translate'
                       ? 'bg-[#28292c] text-white font-medium shadow-sm'
@@ -596,7 +589,7 @@ export const AndroidHeader: React.FC = () => {
                 {/* Lịch Sử Dịch */}
                 <button
                   onClick={() => {
-                    handleSelectNav('translate');
+                    handleSelectNav('translate', 'Lịch Sử Dịch');
                     showToast('Đang mở màn hình dịch & các tác vụ gần đây');
                   }}
                   className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-neutral-300 hover:bg-neutral-800/70 hover:text-white transition-all cursor-pointer"
@@ -614,9 +607,9 @@ export const AndroidHeader: React.FC = () => {
                   BUILD
                 </div>
 
-                {/* Tủ Truyện */}
+                {/* Thư Viện (Đã đổi tên theo yêu cầu) */}
                 <button
-                  onClick={() => handleSelectNav('library')}
+                  onClick={() => handleSelectNav('library', 'Thư Viện')}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
                     activeTab === 'library'
                       ? 'bg-[#28292c] text-white font-medium shadow-sm'
@@ -625,16 +618,16 @@ export const AndroidHeader: React.FC = () => {
                 >
                   <div className="flex items-center gap-3">
                     <Library size={17} className={activeTab === 'library' ? 'text-cyan-400' : 'text-neutral-400'} />
-                    <span className="text-sm">Tủ Truyện Thư Viện</span>
+                    <span className="text-sm">Thư Viện</span>
                   </div>
                   {activeTab === 'library' && (
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
                   )}
                 </button>
 
-                {/* Quản Lý Từ Điển */}
+                {/* Cơ Sở Dữ Liệu & Từ Điển (Hợp nhất toàn bộ database) */}
                 <button
-                  onClick={() => handleSelectNav('dictionary')}
+                  onClick={() => handleSelectNav('dictionary', 'Cơ Sở Dữ Liệu & Từ Điển')}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
                     activeTab === 'dictionary'
                       ? 'bg-[#28292c] text-white font-medium shadow-sm'
@@ -642,52 +635,32 @@ export const AndroidHeader: React.FC = () => {
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <BookMarked size={17} className={activeTab === 'dictionary' ? 'text-cyan-400' : 'text-neutral-400'} />
-                    <span className="text-sm">Quản Lý Từ Điển</span>
+                    <Database size={17} className={activeTab === 'dictionary' ? 'text-cyan-400' : 'text-neutral-400'} />
+                    <span className="text-sm">Cơ Sở Dữ Liệu & Từ Điển</span>
                   </div>
-                  {activeTab === 'dictionary' && (
+                  {activeTab === 'dictionary' ? (
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                  ) : (
+                    <span className="text-[11px] font-mono text-neutral-500">
+                      {namesList.length + Object.keys(vietphraseMap).length} mục
+                    </span>
                   )}
-                </button>
-
-                {/* Tệp Name Riêng */}
-                <button
-                  onClick={() => handleSelectNav('dictionary')}
-                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-neutral-300 hover:bg-neutral-800/70 hover:text-white transition-all cursor-pointer"
-                >
-                  <div className="flex items-center gap-3">
-                    <Sparkles size={17} className="text-neutral-400" />
-                    <span className="text-sm">Tệp Name Cá Nhân</span>
-                  </div>
-                  <span className="text-[11px] font-mono text-neutral-500">{namesList.length}</span>
                 </button>
               </div>
 
-              {/* NHÓM 3: MANAGE / HỆ THỐNG */}
+              {/* NHÓM 3: MANAGE / HỆ THỐNG (Đã bỏ Bảng Điều Khiển vì có nút Cài Đặt ở dưới) */}
+
               <div className="space-y-1">
                 <div className="px-2 text-[11px] font-bold tracking-wider text-neutral-400 uppercase">
                   MANAGE
                 </div>
 
-                {/* Bảng Điều Khiển / Dashboard */}
-                <button
-                  onClick={() => {
-                    handleSelectNav('settings');
-                    showToast('Đang mở Bảng điều khiển cấu hình');
-                  }}
-                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-neutral-300 hover:bg-neutral-800/70 hover:text-white transition-all cursor-pointer"
-                >
-                  <div className="flex items-center gap-3">
-                    <LayoutDashboard size={17} className="text-neutral-400" />
-                    <span className="text-sm">Bảng Điều Khiển</span>
-                  </div>
-                  <ChevronRight size={15} className="text-neutral-500" />
-                </button>
-
                 {/* Tài Liệu & Hướng Dẫn */}
                 <button
                   onClick={() => {
+                    setCurrentNavTitle('Tài Liệu Hướng Dẫn');
                     setIsShortcutsOpen(true);
+                    setIsDrawerOpen(false);
                   }}
                   className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-neutral-300 hover:bg-neutral-800/70 hover:text-white transition-all cursor-pointer"
                 >
@@ -797,7 +770,7 @@ export const AndroidHeader: React.FC = () => {
 
                 {/* 2. NÚT CÀI ĐẶT (Được đặt trực tiếp trên phần tài khoản) */}
                 <button
-                  onClick={() => handleSelectNav('settings')}
+                  onClick={() => handleSelectNav('settings', 'Cài Đặt')}
                   className={`h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
                     activeTab === 'settings'
                       ? 'bg-cyan-600/90 border-cyan-500 text-white shadow-xs'
@@ -825,7 +798,10 @@ export const AndroidHeader: React.FC = () => {
 
                 {/* 4. Nút Phím tắt / Khóa */}
                 <button
-                  onClick={() => setIsShortcutsOpen(prev => !prev)}
+                  onClick={() => {
+                    setCurrentNavTitle('Phím Tắt');
+                    setIsShortcutsOpen(prev => !prev);
+                  }}
                   className={`h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
                     isShortcutsOpen
                       ? 'bg-neutral-800 border-neutral-600 text-white shadow-xs'
@@ -862,7 +838,7 @@ export const AndroidHeader: React.FC = () => {
                       <span>Khớp {novelsList.filter(n => n.title.toLowerCase().includes(searchQuery.toLowerCase())).length} bộ truyện</span>
                       <button
                         onClick={() => {
-                          handleSelectNav('library');
+                          handleSelectNav('library', 'Thư Viện');
                           setIsSearchOpen(false);
                         }}
                         className="text-cyan-400 hover:underline cursor-pointer"

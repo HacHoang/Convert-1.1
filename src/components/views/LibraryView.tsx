@@ -286,11 +286,7 @@ export const LibraryView: React.FC = () => {
                 <button
                   onClick={handleToggleViewMode}
                   className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-cyan-400 border border-neutral-700 transition-colors"
-                  title={
-                    libraryViewMode === 'grid' 
-                      ? 'Đang xem Ô Lưới (tổng quan): Bấm để chuyển sang Danh Sách (chi tiết)' 
-                      : 'Đang xem Danh Sách (chi tiết): Bấm để chuyển sang Ô Lưới (tổng quan)'
-                  }
+                  title={libraryViewMode === 'grid' ? 'Xem danh sách' : 'Xem dạng lưới'}
                   aria-label="Chuyển đổi giao diện xem"
                 >
                   {libraryViewMode === 'grid' ? <List size={15} /> : <LayoutGrid size={15} />}
@@ -305,8 +301,8 @@ export const LibraryView: React.FC = () => {
                         ? 'bg-cyan-600 text-white border-cyan-500' 
                         : 'bg-neutral-800 text-neutral-300 border-neutral-700 hover:text-white hover:bg-neutral-700'
                     }`}
-                    title="Sắp xếp truyện (Chương mới cập nhật nhất, A-Z, Z-A...)"
-                    aria-label="Sắp xếp truyện"
+                    title="Sắp xếp"
+                    aria-label="Sắp xếp"
                   >
                     <ArrowUpDown size={15} />
                   </button>

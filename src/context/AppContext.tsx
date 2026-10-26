@@ -1,7 +1,7 @@
 /**
  * Context quản lý toàn bộ dữ liệu offline của Convert
  * 100% Offline, không yêu cầu đăng nhập.
- * Hỗ trợ IndexedDB cho từ điển dung lượng lớn (~40MB+)
+ * Hỗ trợ IndexedDB cho toàn bộ các bảng từ điển QuickTranslator (~40MB+)
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
@@ -19,8 +19,29 @@ import {
   saveVietphraseItem, 
   deleteVietphraseItem, 
   saveVietphraseBatch, 
-  clearVietphraseStore 
+  clearVietphraseStore,
+  getStoredNamesMain,
+  saveNamesMainBatch,
+  clearNamesMainStore,
+  getStoredLuatNhan,
+  saveLuatNhanBatch,
+  clearLuatNhanStore,
+  getStoredPronouns,
+  savePronounsBatch,
+  clearPronounsStore,
+  getStoredIgnoredPhrases,
+  saveIgnoredPhrasesBatch,
+  clearIgnoredPhrasesStore,
+  exportAllDatabases,
+  importAllDatabases
 } from '../utils/indexedDbStorage';
+import { 
+  DEFAULT_LUAT_NHAN, 
+  DEFAULT_PRONOUNS, 
+  DEFAULT_IGNORED_PHRASES, 
+  DEFAULT_NAMES2, 
+  CHINESE_PHIEN_AM_WORDS 
+} from '../data/quickTranslatorData';
 
 export interface SavedChapter {
   id: string;
@@ -59,17 +80,11 @@ export const PRESET_COVERS = [
   'https://images.unsplash.com/photo-1516339901601-2e1b62dc0c45?w=400&auto=format&fit=crop&q=80',
 ];
 
-/**
- * Tách tự động tiền tố chương (Chương 30) và tên chương riêng biệt (Nguy Kịch)
- * từ header văn bản đã dịch.
- */
 export function parseChapterHeader(title: string): { prefix: string; name: string; full: string } {
   if (!title) return { prefix: 'Chương 1', name: '', full: 'Chương 1' };
   const trimmed = title.trim();
   
-  // Khớp các định dạng như: "Chương 30 Nguy Kịch", "Chương 30: Nguy Kịch", "Hồi 1 - Xuất thế", v.v.
   const match = trimmed.match(/^(Chương\s*\d+|Hồi\s*\d+|Đệ\s*\d+\s*Chương|Tiết\s*\d+|Phần\s*\d+)(?:[\s:：\-–—\.]+)?(.*)$/i);
-  
   if (match) {
     const prefix = match[1].trim();
     const name = match[2].trim();
@@ -90,7 +105,7 @@ export function parseChapterHeader(title: string): { prefix: string; name: strin
   return { prefix: 'Chương', name: trimmed, full: trimmed };
 }
 
-export type AppTheme = 'dark' | 'light' | 'sepia' | 'mint' | 'amoled' | 'system';
+export type AppTheme = 'light' | 'dark' | 'sepia' | 'system';
 export type AppTab = 'translate' | 'library' | 'dictionary' | 'settings';
 
 export interface AppSettings {
@@ -117,6 +132,15 @@ export interface GoogleAccount {
   avatarUrl?: string;
 }
 
+export type DictCategoryType = 
+  | 'names' 
+  | 'names_main' 
+  | 'vietphrase' 
+  | 'luatnhan' 
+  | 'pronouns' 
+  | 'phienam' 
+  | 'ignored';
+
 interface AppContextType {
   activeTab: AppTab;
   setActiveTab: (tab: AppTab) => void;
@@ -130,13 +154,16 @@ interface AppContextType {
   loginWithGoogle: (email?: string, name?: string) => void;
   logoutGoogle: () => void;
   
-  // Names
+  // Names Phụ / Cá Nhân
   namesList: NameItem[];
   addName: (chinese: string, vietnamese: string, category?: NameItem['category'], note?: string) => boolean;
   updateName: (id: string, updates: Partial<NameItem>) => void;
   deleteName: (id: string) => void;
   exportNamesTxt: () => string;
   importNamesTxt: (content: string) => number;
+
+  // Names Chính (Gốc 136k từ)
+  namesMainMap: Record<string, string>;
   
   // Vietphrase
   vietphraseMap: Record<string, string>;
@@ -145,13 +172,30 @@ interface AppContextType {
   exportVietphraseTxt: () => string;
   importVietphraseTxt: (content: string) => number;
   resetDictionaries: () => void;
+
+  // Luật Nhân (LuatNhan)
+  luatNhanMap: Record<string, string>;
   
-  // Thao tác xóa cụm từ chung (xóa cả trong Name và Vietphrase)
+  // Đại Từ (Pronouns)
+  pronounsMap: Record<string, string>;
+  
+  // Cụm Bỏ Qua (IgnoredPhrases)
+  ignoredPhrasesList: string[];
+  
+  // Thao tác xóa cụm từ chung
   deletePhrase: (chinese: string) => void;
   importEntriesBatch: (type: 'names' | 'vietphrase', entries: Array<{ chinese: string; vietnamese: string }>) => Promise<number>;
   isImportingLargeFile: boolean;
   importProgress: { count: number; percent: number } | null;
   setImportProgress: React.Dispatch<React.SetStateAction<{ count: number; percent: number } | null>>;
+
+  // IMPORT / EXPORT ĐƠN LẺ & HÀNG LOẠT
+  exportSingleTxt: (dictType: DictCategoryType) => string;
+  importSingleTxt: (dictType: DictCategoryType, content: string) => Promise<number>;
+  clearSpecificStore: (dictType: DictCategoryType) => Promise<void>;
+  loadAllQuickTranslatorAssets: (onProgress?: (msg: string, percent: number) => void) => Promise<{ success: boolean; message: string }>;
+  exportAllDatabasesJson: () => Promise<string>;
+  importAllDatabasesJson: (jsonStr: string) => Promise<{ success: boolean; message: string }>;
 
   // Novels / Quản lý bộ truyện
   novelsList: NovelBook[];
@@ -218,11 +262,11 @@ const DEFAULT_NOVELS: NovelBook[] = [
     originalTitle: '遮天',
     author: 'Thần Đông (辰东)',
     coverUrl: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=400&auto=format&fit=crop&q=80',
-    description: 'Băng lãnh cùng hắc ám cùng tồn tại trong vũ trụ sâu thẳm, chín bộ rồng thi thể kéo theo một chiếc quan tài đồng xanh cổ xưa từ thời hồng hoang... Diệp Phàm cùng chúng bạn từ đỉnh Thái Sơn bị cuốn vào Bắc Đẩu tinh vực.',
-    genre: 'Huyền huyễn / Thần thoại',
+    description: 'Băng lãnh cùng hắc ám cùng tồn tại trong vũ trụ sâu thẳm, chín bộ kéo hòm rồng khổng lồ nằm ngang vạn cổ. Diệp Phàm cùng các bạn học tham gia họp lớp tại Thái Sơn, bất ngờ bị cuốn vào hành trình tu tiên vĩ đại xuyên qua các tinh vực...',
+    genre: 'Huyền huyễn / Tiên hiệp',
     createdAt: Date.now() - 800000,
     updatedAt: Date.now() - 300000,
-  }
+  },
 ];
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -242,13 +286,25 @@ const AppContext = createContext<AppContextType | null>(null);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<AppTab>('translate');
 
-  // Load Names: khởi tạo từ INITIAL_NAMES, sau đó nạp từ IndexedDB
+  // Load Names cá nhân / phụ
   const [namesList, setNamesList] = useState<NameItem[]>(INITIAL_NAMES);
+
+  // Load Names chính (136k từ)
+  const [namesMainMap, setNamesMainMap] = useState<Record<string, string>>({});
 
   // Load Vietphrase
   const [vietphraseMap, setVietphraseMap] = useState<Record<string, string>>({});
 
-  // Loading progress state for 40MB files
+  // Load Luật nhân
+  const [luatNhanMap, setLuatNhanMap] = useState<Record<string, string>>(DEFAULT_LUAT_NHAN);
+
+  // Load Đại từ
+  const [pronounsMap, setPronounsMap] = useState<Record<string, string>>(DEFAULT_PRONOUNS);
+
+  // Load Cụm từ bỏ qua
+  const [ignoredPhrasesList, setIgnoredPhrasesList] = useState<string[]>(DEFAULT_IGNORED_PHRASES);
+
+  // Loading progress state
   const [isImportingLargeFile, setIsImportingLargeFile] = useState(false);
   const [importProgress, setImportProgress] = useState<{ count: number; percent: number } | null>(null);
 
@@ -262,7 +318,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (storedNames && storedNames.length > 0) {
             setNamesList(storedNames);
           } else {
-            // Seed initial names into IndexedDB
             saveNamesBatch(INITIAL_NAMES).catch(console.error);
           }
         }
@@ -272,11 +327,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       try {
         const storedVp = await getStoredVietphrase();
-        if (isMounted) {
-          setVietphraseMap(storedVp || {});
+        if (isMounted && storedVp && Object.keys(storedVp).length > 0) {
+          setVietphraseMap(storedVp);
         }
       } catch (err) {
         console.error('Error loading vietphrase from IndexedDB', err);
+      }
+
+      try {
+        const storedMain = await getStoredNamesMain();
+        if (isMounted && storedMain && Object.keys(storedMain).length > 0) {
+          setNamesMainMap(storedMain);
+        }
+      } catch (err) {
+        console.error('Error loading namesMain from IndexedDB', err);
+      }
+
+      try {
+        const storedLn = await getStoredLuatNhan();
+        if (isMounted && storedLn && Object.keys(storedLn).length > 0) {
+          setLuatNhanMap(prev => ({ ...prev, ...storedLn }));
+        }
+      } catch (err) {
+        console.error('Error loading luatNhan from IndexedDB', err);
+      }
+
+      try {
+        const storedPro = await getStoredPronouns();
+        if (isMounted && storedPro && Object.keys(storedPro).length > 0) {
+          setPronounsMap(prev => ({ ...prev, ...storedPro }));
+        }
+      } catch (err) {
+        console.error('Error loading pronouns from IndexedDB', err);
+      }
+
+      try {
+        const storedIgnored = await getStoredIgnoredPhrases();
+        if (isMounted && storedIgnored && storedIgnored.length > 0) {
+          setIgnoredPhrasesList(storedIgnored);
+        }
+      } catch (err) {
+        console.error('Error loading ignored phrases from IndexedDB', err);
       }
     })();
 
@@ -310,23 +401,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // ignore
     }
-    return [
-      {
-        id: 'chap-init-1',
-        novelId: 'novel-1',
-        title: SAMPLE_CHAPTERS[0].chapterTitle,
-        novelTitle: SAMPLE_CHAPTERS[0].bookTitle,
-        originalText: SAMPLE_CHAPTERS[0].chineseContent,
-        vietphraseText: '',
-        savedAt: Date.now() - 50000,
-      }
-    ];
+    return SAMPLE_CHAPTERS;
   });
 
-  // Settings
+  // Load Settings
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
-      const stored = localStorage.getItem('ttv_settings');
+      const stored = localStorage.getItem('ttv_reader_settings');
       if (stored) {
         return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
       }
@@ -336,36 +417,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return DEFAULT_SETTINGS;
   });
 
-  // Reading Stats (Số sách đã đọc, tổng số phút đọc)
+  // Reading Stats
   const [readingStats, setReadingStats] = useState<ReadingStats>(() => {
     try {
       const stored = localStorage.getItem('ttv_reading_stats');
       if (stored) {
-        const parsed = JSON.parse(stored);
-        if (typeof parsed.totalReadBooks === 'number' && typeof parsed.totalReadMinutes === 'number') {
-          return parsed;
-        }
+        return JSON.parse(stored);
       }
     } catch {
       // ignore
     }
     return {
       totalReadBooks: 2,
-      totalReadMinutes: 108, // 1.8 giờ
+      totalReadMinutes: 145,
     };
   });
 
-  const resetReadingStats = useCallback(() => {
-    const zero: ReadingStats = { totalReadBooks: 0, totalReadMinutes: 0 };
-    setReadingStats(zero);
-    try {
-      localStorage.setItem('ttv_reading_stats', JSON.stringify(zero));
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  // Google Account state
+  // Google Account
   const [googleAccount, setGoogleAccount] = useState<GoogleAccount>(() => {
     try {
       const stored = localStorage.getItem('ttv_google_account');
@@ -376,59 +444,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // ignore
     }
     return {
-      isLoggedIn: true,
-      email: 'readerheadless@gmail.com',
-      name: 'Google Reader',
-      avatarUrl: '',
-    };
-  });
-
-  const loginWithGoogle = useCallback((email?: string, name?: string) => {
-    const account: GoogleAccount = {
-      isLoggedIn: true,
-      email: email || 'readerheadless@gmail.com',
-      name: name || 'Google Reader',
-      avatarUrl: '',
-    };
-    setGoogleAccount(account);
-    try {
-      localStorage.setItem('ttv_google_account', JSON.stringify(account));
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const logoutGoogle = useCallback(() => {
-    const account: GoogleAccount = {
       isLoggedIn: false,
       email: '',
       name: '',
-      avatarUrl: '',
+      avatarUrl: undefined,
     };
-    setGoogleAccount(account);
-    try {
-      localStorage.setItem('ttv_google_account', JSON.stringify(account));
-    } catch {
-      // ignore
-    }
-  }, []);
+  });
 
-  // Sync readingStats and googleAccount
-  useEffect(() => {
-    try {
-      localStorage.setItem('ttv_reading_stats', JSON.stringify(readingStats));
-    } catch {
-      // ignore
-    }
-  }, [readingStats]);
-
-  // Active translation content buffer
-  const [activeRawText, setActiveRawText] = useState<string>('');
-  const [activeChapterTitle, setActiveChapterTitle] = useState<string>('');
-  const [activeNovelTitle, setActiveNovelTitle] = useState<string>('');
-  const [activeNovelId, setActiveNovelId] = useState<string>('novel-1');
-
-  // Inspect Modal
+  // Inspection modal state
   const [inspectModal, setInspectModal] = useState<{
     isOpen: boolean;
     initialChinese: string;
@@ -441,85 +464,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     initialCategory: 'Nhân vật',
   });
 
-  // Sync lightweight novel and settings to localStorage (novels and chapters are small JSON)
+  // Active translation state
+  const [activeRawText, setActiveRawText] = useState('');
+  const [activeChapterTitle, setActiveChapterTitle] = useState('');
+  const [activeNovelTitle, setActiveNovelTitle] = useState('Đấu Phá Thương Khung');
+  const [activeNovelId, setActiveNovelId] = useState('novel-1');
+
+  // Persistence effects
   useEffect(() => {
-    try {
-      localStorage.setItem('ttv_novel_books', JSON.stringify(novelsList));
-    } catch {
-      // ignore
-    }
+    localStorage.setItem('ttv_novel_books', JSON.stringify(novelsList));
   }, [novelsList]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('ttv_saved_chapters', JSON.stringify(savedChapters));
-    } catch {
-      // ignore
-    }
+    localStorage.setItem('ttv_saved_chapters', JSON.stringify(savedChapters));
   }, [savedChapters]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('ttv_settings', JSON.stringify(settings));
-    } catch {
-      // ignore
-    }
+    localStorage.setItem('ttv_reader_settings', JSON.stringify(settings));
   }, [settings]);
 
+  useEffect(() => {
+    localStorage.setItem('ttv_reading_stats', JSON.stringify(readingStats));
+  }, [readingStats]);
+
+  useEffect(() => {
+    localStorage.setItem('ttv_google_account', JSON.stringify(googleAccount));
+  }, [googleAccount]);
+
+  const updateSettings = (updates: Partial<AppSettings>) => {
+    setSettings(prev => ({ ...prev, ...updates }));
+  };
+
+  const resetReadingStats = () => {
+    setReadingStats({ totalReadBooks: 0, totalReadMinutes: 0 });
+  };
+
+  const loginWithGoogle = (email?: string, name?: string) => {
+    const userEmail = email || 'converter.pro@gmail.com';
+    const userName = name || 'Converter Pro';
+    setGoogleAccount({
+      isLoggedIn: true,
+      email: userEmail,
+      name: userName,
+      avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
+    });
+  };
+
+  const logoutGoogle = () => {
+    setGoogleAccount({
+      isLoggedIn: false,
+      email: '',
+      name: '',
+      avatarUrl: undefined,
+    });
+  };
+
+  const openInspectModal = (chinese: string, vietnamese?: string, category?: NameItem['category']) => {
+    setInspectModal({
+      isOpen: true,
+      initialChinese: chinese,
+      initialVietnamese: vietnamese || '',
+      initialCategory: category || 'Nhân vật',
+    });
+  };
+
+  const closeInspectModal = () => {
+    setInspectModal(prev => ({ ...prev, isOpen: false }));
+  };
+
   // Names handlers
-  const addName = (
-    chinese: string,
-    vietnamese: string,
-    category: NameItem['category'] = 'Nhân vật',
-    note: string = ''
-  ): boolean => {
-    const cleanChinese = chinese.trim();
-    const cleanViet = vietnamese.trim();
-    if (!cleanChinese || !cleanViet) return false;
+  const addName = (chinese: string, vietnamese: string, category: NameItem['category'] = 'Nhân vật', note = ''): boolean => {
+    if (!chinese.trim() || !vietnamese.trim()) return false;
+    const cleanCn = chinese.trim();
+    const cleanVn = vietnamese.trim();
 
-    let targetItem: NameItem | null = null;
-
-    setNamesList(prev => {
-      const existingIdx = prev.findIndex(item => item.chinese === cleanChinese);
-      if (existingIdx >= 0) {
-        const updated = [...prev];
-        targetItem = {
-          ...updated[existingIdx],
-          vietnamese: cleanViet,
-          category,
-          note: note || updated[existingIdx].note,
-        };
-        updated[existingIdx] = targetItem;
-        return updated;
-      }
-      targetItem = {
-        id: `name-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        chinese: cleanChinese,
-        vietnamese: cleanViet,
+    const existingIndex = namesList.findIndex(n => n.chinese === cleanCn);
+    if (existingIndex >= 0) {
+      const updated = [...namesList];
+      const updatedItem: NameItem = {
+        ...updated[existingIndex],
+        vietnamese: cleanVn,
         category,
-        note,
+        note: note || updated[existingIndex].note,
         createdAt: Date.now(),
       };
-      return [targetItem, ...prev];
-    });
-
-    if (targetItem) {
-      saveNameItem(targetItem).catch(console.error);
+      updated[existingIndex] = updatedItem;
+      setNamesList(updated);
+      saveNameItem(updatedItem).catch(console.error);
+      return true;
     }
+
+    const newItem: NameItem = {
+      id: `name-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      chinese: cleanCn,
+      vietnamese: cleanVn,
+      category,
+      note,
+      createdAt: Date.now(),
+    };
+
+    setNamesList(prev => [newItem, ...prev]);
+    saveNameItem(newItem).catch(console.error);
     return true;
   };
 
   const updateName = (id: string, updates: Partial<NameItem>) => {
     setNamesList(prev => {
-      const next = prev.map(item => {
+      const updated = prev.map(item => {
         if (item.id === id) {
-          const updated = { ...item, ...updates };
-          saveNameItem(updated).catch(console.error);
-          return updated;
+          const newItem = { ...item, ...updates };
+          saveNameItem(newItem).catch(console.error);
+          return newItem;
         }
         return item;
       });
-      return next;
+      return updated;
     });
   };
 
@@ -528,11 +587,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     deleteNameItem(id).catch(console.error);
   };
 
-  // Vietphrase handlers
+  const deletePhrase = (chinese: string) => {
+    const cleanCn = chinese.trim();
+    if (!cleanCn) return;
+
+    deleteNameByChinese(cleanCn).catch(console.error);
+    setNamesList(prev => prev.filter(n => n.chinese !== cleanCn));
+
+    deleteVietphraseItem(cleanCn).catch(console.error);
+    setVietphraseMap(prev => {
+      const copy = { ...prev };
+      delete copy[cleanCn];
+      return copy;
+    });
+  };
+
   const addVietphrase = (chinese: string, vietnamese: string) => {
+    if (!chinese.trim() || !vietnamese.trim()) return;
     const cn = chinese.trim();
     const vn = vietnamese.trim();
-    if (!cn || !vn) return;
+
     setVietphraseMap(prev => ({
       ...prev,
       [cn]: vn,
@@ -541,86 +615,317 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteVietphrase = (chinese: string) => {
+    const cn = chinese.trim();
     setVietphraseMap(prev => {
-      const copy = { ...prev };
-      delete copy[chinese];
-      return copy;
+      const next = { ...prev };
+      delete next[cn];
+      return next;
     });
-    deleteVietphraseItem(chinese).catch(console.error);
+    deleteVietphraseItem(cn).catch(console.error);
   };
 
-  // Thao tác xóa cụm từ thống nhất (được gọi từ Khung Trung Văn khi bôi đen chữ Hán)
-  const deletePhrase = useCallback((chinese: string) => {
-    const trimmed = chinese.trim();
-    if (!trimmed) return;
-
-    // 1. Xóa khỏi Tệp Name
-    setNamesList(prev => prev.filter(n => n.chinese !== trimmed));
-    deleteNameByChinese(trimmed).catch(console.error);
-
-    // 2. Xóa khỏi Vietphrase
-    setVietphraseMap(prev => {
-      const copy = { ...prev };
-      delete copy[trimmed];
-      return copy;
-    });
-    deleteVietphraseItem(trimmed).catch(console.error);
-  }, []);
-
-  // Import số lượng lớn theo batch trực tiếp vào IndexedDB & RAM (cho tệp 40MB)
   const importEntriesBatch = async (
     type: 'names' | 'vietphrase',
     entries: Array<{ chinese: string; vietnamese: string }>
   ): Promise<number> => {
-    if (!entries || entries.length === 0) return 0;
+    if (entries.length === 0) return 0;
     setIsImportingLargeFile(true);
 
     try {
       if (type === 'names') {
-        const newItems: NameItem[] = entries.map((e, idx) => ({
-          id: `name-${Date.now()}-${idx}`,
+        const newNames: NameItem[] = entries.map((e, idx) => ({
+          id: `batch-${Date.now()}-${idx}`,
           chinese: e.chinese,
           vietnamese: e.vietnamese,
           category: 'Nhân vật',
-          note: 'Nhập từ tệp QuickTranslator',
+          note: 'Nhập lô QuickTranslator',
           createdAt: Date.now(),
         }));
 
-        // Ghi vào IndexedDB
-        await saveNamesBatch(newItems);
-
-        // Cập nhật RAM State
+        await saveNamesBatch(newNames);
         setNamesList(prev => {
           const map = new Map<string, NameItem>();
           for (const item of prev) map.set(item.chinese, item);
-          for (const item of newItems) map.set(item.chinese, item);
+          for (const item of newNames) map.set(item.chinese, item);
           return Array.from(map.values());
         });
+        return newNames.length;
       } else {
-        // Vietphrase
         await saveVietphraseBatch(entries);
-
         setVietphraseMap(prev => {
-          const next = { ...prev };
+          const map = { ...prev };
           for (const e of entries) {
-            next[e.chinese] = e.vietnamese;
+            map[e.chinese] = e.vietnamese;
           }
-          return next;
+          return map;
         });
+        return entries.length;
       }
-
-      return entries.length;
     } finally {
       setIsImportingLargeFile(false);
+      setImportProgress(null);
     }
   };
 
-  const exportNamesTxt = (): string => {
-    return namesList
-      .map(item => `${item.chinese}=${item.vietnamese}`)
-      .join('\n');
+  // Export / Import từng file riêng lẻ theo cú pháp QuickTranslator
+  const exportSingleTxt = (dictType: DictCategoryType): string => {
+    switch (dictType) {
+      case 'names':
+        return namesList.map(item => `${item.chinese}=${item.vietnamese}`).join('\n');
+      case 'names_main':
+        return Object.entries(namesMainMap).map(([k, v]) => `${k}=${v}`).join('\n');
+      case 'vietphrase': {
+        const merged = { ...DEFAULT_VIETPHRASE, ...vietphraseMap };
+        return Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n');
+      }
+      case 'luatnhan': {
+        const merged = { ...DEFAULT_LUAT_NHAN, ...luatNhanMap };
+        return Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n');
+      }
+      case 'pronouns': {
+        const merged = { ...DEFAULT_PRONOUNS, ...pronounsMap };
+        return Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n');
+      }
+      case 'phienam':
+        return Object.entries(CHINESE_PHIEN_AM_WORDS).map(([k, v]) => `${k}=${v}`).join('\n');
+      case 'ignored':
+        return ignoredPhrasesList.join('\n');
+      default:
+        return '';
+    }
   };
 
+  const importSingleTxt = async (dictType: DictCategoryType, content: string): Promise<number> => {
+    const lines = content.split(/\r?\n/);
+    let count = 0;
+
+    if (dictType === 'ignored') {
+      const phrases = lines.map(l => l.trim()).filter(l => l && !l.startsWith('#') && !l.startsWith('//'));
+      await saveIgnoredPhrasesBatch(phrases);
+      setIgnoredPhrasesList(phrases);
+      return phrases.length;
+    }
+
+    const keyValBatch: Array<{ chinese: string; vietnamese: string }> = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx > 0) {
+        const k = trimmed.slice(0, eqIdx).trim();
+        const v = trimmed.slice(eqIdx + 1).trim();
+        if (k) {
+          keyValBatch.push({ chinese: k, vietnamese: v });
+          count++;
+        }
+      }
+    }
+
+    if (keyValBatch.length === 0) return 0;
+
+    switch (dictType) {
+      case 'names': {
+        const items: NameItem[] = keyValBatch.map((e, idx) => ({
+          id: `name-import-${Date.now()}-${idx}`,
+          chinese: e.chinese,
+          vietnamese: e.vietnamese,
+          category: 'Nhân vật',
+          note: 'Nhập từ tệp TXT',
+          createdAt: Date.now(),
+        }));
+        await saveNamesBatch(items);
+        setNamesList(prev => {
+          const map = new Map<string, NameItem>();
+          for (const item of prev) map.set(item.chinese, item);
+          for (const item of items) map.set(item.chinese, item);
+          return Array.from(map.values());
+        });
+        break;
+      }
+      case 'names_main': {
+        await saveNamesMainBatch(keyValBatch);
+        setNamesMainMap(prev => {
+          const next = { ...prev };
+          for (const item of keyValBatch) next[item.chinese] = item.vietnamese;
+          return next;
+        });
+        break;
+      }
+      case 'vietphrase': {
+        await saveVietphraseBatch(keyValBatch);
+        setVietphraseMap(prev => {
+          const next = { ...prev };
+          for (const item of keyValBatch) next[item.chinese] = item.vietnamese;
+          return next;
+        });
+        break;
+      }
+      case 'luatnhan': {
+        const records = keyValBatch.map(k => ({ pattern: k.chinese, translation: k.vietnamese }));
+        await saveLuatNhanBatch(records);
+        setLuatNhanMap(prev => {
+          const next = { ...prev };
+          for (const r of records) next[r.pattern] = r.translation;
+          return next;
+        });
+        break;
+      }
+      case 'pronouns': {
+        await savePronounsBatch(keyValBatch);
+        setPronounsMap(prev => {
+          const next = { ...prev };
+          for (const item of keyValBatch) next[item.chinese] = item.vietnamese;
+          return next;
+        });
+        break;
+      }
+    }
+
+    return count;
+  };
+
+  const clearSpecificStore = async (dictType: DictCategoryType): Promise<void> => {
+    switch (dictType) {
+      case 'names':
+        await clearNamesStore();
+        setNamesList([]);
+        break;
+      case 'names_main':
+        await clearNamesMainStore();
+        setNamesMainMap({});
+        break;
+      case 'vietphrase':
+        await clearVietphraseStore();
+        setVietphraseMap({});
+        break;
+      case 'luatnhan':
+        await clearLuatNhanStore();
+        setLuatNhanMap(DEFAULT_LUAT_NHAN);
+        break;
+      case 'pronouns':
+        await clearPronounsStore();
+        setPronounsMap(DEFAULT_PRONOUNS);
+        break;
+      case 'ignored':
+        await clearIgnoredPhrasesStore();
+        setIgnoredPhrasesList(DEFAULT_IGNORED_PHRASES);
+        break;
+    }
+  };
+
+  // Nạp toàn bộ dữ liệu gốc từ bộ asset QuickTranslator
+  const loadAllQuickTranslatorAssets = async (
+    onProgress?: (msg: string, percent: number) => void
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      onProgress?.('Đang nạp Luật Nhân & Đại Từ...', 15);
+      const lnRecords = Object.entries(DEFAULT_LUAT_NHAN).map(([pattern, translation]) => ({ pattern, translation }));
+      await saveLuatNhanBatch(lnRecords);
+      setLuatNhanMap(DEFAULT_LUAT_NHAN);
+
+      const proRecords = Object.entries(DEFAULT_PRONOUNS).map(([chinese, vietnamese]) => ({ chinese, vietnamese }));
+      await savePronounsBatch(proRecords);
+      setPronounsMap(DEFAULT_PRONOUNS);
+
+      await saveIgnoredPhrasesBatch(DEFAULT_IGNORED_PHRASES);
+      setIgnoredPhrasesList(DEFAULT_IGNORED_PHRASES);
+
+      onProgress?.('Đang nạp Names Phụ (Names2)...', 35);
+      const names2Items: NameItem[] = Object.entries(DEFAULT_NAMES2).map(([chinese, vietnamese], idx) => ({
+        id: `name2-${idx}`,
+        chinese,
+        vietnamese,
+        category: 'Nhân vật',
+        note: 'Names phụ gốc QuickTranslator',
+        createdAt: Date.now(),
+      }));
+      await saveNamesBatch(names2Items);
+      setNamesList(names2Items);
+
+      onProgress?.('Đang đọc tệp Names chính (Names.txt ~136k từ)...', 60);
+      try {
+        const namesRes = await fetch('/assets/aistudio/Names_537be5ed.txt');
+        if (namesRes.ok) {
+          const namesTxt = await namesRes.text();
+          const lines = namesTxt.split(/\r?\n/);
+          const batch: Array<{ chinese: string; vietnamese: string }> = [];
+          for (const line of lines) {
+            const eqIdx = line.indexOf('=');
+            if (eqIdx > 0) {
+              const cn = line.slice(0, eqIdx).trim();
+              const vn = line.slice(eqIdx + 1).trim();
+              if (cn && vn) batch.push({ chinese: cn, vietnamese: vn });
+            }
+          }
+          await saveNamesMainBatch(batch);
+          const map: Record<string, string> = {};
+          for (const b of batch) map[b.chinese] = b.vietnamese;
+          setNamesMainMap(map);
+        }
+      } catch (err) {
+        console.warn('Could not load asset Names.txt', err);
+      }
+
+      onProgress?.('Đang đọc tệp Vietphrase cơ bản...', 85);
+      try {
+        const vpRes = await fetch('/assets/aistudio/Vietphrase_cho_file_g_p_ef2c75e8.txt');
+        if (vpRes.ok) {
+          const vpTxt = await vpRes.text();
+          const lines = vpTxt.split(/\r?\n/);
+          const batch: Array<{ chinese: string; vietnamese: string }> = [];
+          for (const line of lines) {
+            const eqIdx = line.indexOf('=');
+            if (eqIdx > 0) {
+              const cn = line.slice(0, eqIdx).trim();
+              const vn = line.slice(eqIdx + 1).trim();
+              if (cn && vn) batch.push({ chinese: cn, vietnamese: vn });
+            }
+          }
+          await saveVietphraseBatch(batch);
+          setVietphraseMap(prev => {
+            const next = { ...prev };
+            for (const b of batch) next[b.chinese] = b.vietnamese;
+            return next;
+          });
+        }
+      } catch (err) {
+        console.warn('Could not load Vietphrase_cho_file_g_p', err);
+      }
+
+      onProgress?.('Hoàn tất nạp dữ liệu QuickTranslator!', 100);
+      return { success: true, message: 'Đã nạp trọn bộ dữ liệu QuickTranslator thành công!' };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Lỗi khi nạp dữ liệu' };
+    }
+  };
+
+  const exportAllDatabasesJson = async (): Promise<string> => {
+    return exportAllDatabases();
+  };
+
+  const importAllDatabasesJson = async (jsonStr: string): Promise<{ success: boolean; message: string }> => {
+    const res = await importAllDatabases(jsonStr);
+    if (res.success) {
+      // Refresh local state from IndexedDB
+      const [names, main, vp, ln, pro, ign] = await Promise.all([
+        getStoredNames(),
+        getStoredNamesMain(),
+        getStoredVietphrase(),
+        getStoredLuatNhan(),
+        getStoredPronouns(),
+        getStoredIgnoredPhrases()
+      ]);
+      setNamesList(names);
+      setNamesMainMap(main);
+      setVietphraseMap(vp);
+      setLuatNhanMap(ln);
+      setPronounsMap(pro);
+      setIgnoredPhrasesList(ign);
+    }
+    return res;
+  };
+
+  const exportNamesTxt = (): string => exportSingleTxt('names');
   const importNamesTxt = (content: string): number => {
     const lines = content.split(/\r?\n/);
     let count = 0;
@@ -659,13 +964,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newItems.length;
   };
 
-  const exportVietphraseTxt = (): string => {
-    const merged = { ...DEFAULT_VIETPHRASE, ...vietphraseMap };
-    return Object.entries(merged)
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n');
-  };
-
+  const exportVietphraseTxt = (): string => exportSingleTxt('vietphrase');
   const importVietphraseTxt = (content: string): number => {
     const lines = content.split(/\r?\n/);
     let count = 0;
@@ -724,7 +1023,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteNovel = (id: string) => {
     setNovelsList(prev => prev.filter(book => book.id !== id));
-    // Cập nhật lại các chương thuộc truyện này
     setSavedChapters(prev => prev.filter(chap => chap.novelId !== id));
   };
 
@@ -747,44 +1045,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setSavedChapters(prev => [newChapter, ...prev]);
 
-    // Đồng thời cập nhật thời gian updatedAt của bộ truyện tương ứng để sắp xếp chương mới nhất
-    if (chapter.novelId) {
-      setNovelsList(prev => prev.map(book => 
-        book.id === chapter.novelId ? { ...book, updatedAt: Date.now() } : book
-      ));
-    } else if (chapter.novelTitle) {
-      setNovelsList(prev => prev.map(book => 
-        book.title === chapter.novelTitle ? { ...book, updatedAt: Date.now() } : book
-      ));
-    }
+    setNovelsList(prev =>
+      prev.map(b => (b.id === chapter.novelId || b.title === chapter.novelTitle ? { ...b, updatedAt: Date.now() } : b))
+    );
 
     return id;
   };
 
   const deleteSavedChapter = (id: string) => {
-    setSavedChapters(prev => prev.filter(c => c.id !== id));
-  };
-
-  const updateSettings = (updates: Partial<AppSettings>) => {
-    setSettings(prev => ({ ...prev, ...updates }));
-  };
-
-  // Inspect Modal
-  const openInspectModal = (
-    chinese: string,
-    vietnamese: string = '',
-    category: NameItem['category'] = 'Nhân vật'
-  ) => {
-    setInspectModal({
-      isOpen: true,
-      initialChinese: chinese,
-      initialVietnamese: vietnamese,
-      initialCategory: category,
-    });
-  };
-
-  const closeInspectModal = () => {
-    setInspectModal(prev => ({ ...prev, isOpen: false }));
+    setSavedChapters(prev => prev.filter(chap => chap.id !== id));
   };
 
   return (
@@ -803,17 +1072,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteName,
         exportNamesTxt,
         importNamesTxt,
+        namesMainMap,
         vietphraseMap,
         addVietphrase,
         deleteVietphrase,
         exportVietphraseTxt,
         importVietphraseTxt,
         resetDictionaries,
+        luatNhanMap,
+        pronounsMap,
+        ignoredPhrasesList,
         deletePhrase,
         importEntriesBatch,
         isImportingLargeFile,
         importProgress,
         setImportProgress,
+        exportSingleTxt,
+        importSingleTxt,
+        clearSpecificStore,
+        loadAllQuickTranslatorAssets,
+        exportAllDatabasesJson,
+        importAllDatabasesJson,
         novelsList,
         addNovel,
         updateNovel,

@@ -62,7 +62,12 @@ export const TranslateView: React.FC = () => {
     activeNovelId,
     setActiveNovelId,
     deletePhrase,
+    luatNhanMap,
+    pronounsMap,
+    ignoredPhrasesList,
   } = useApp();
+
+
 
   const [inputChinese, setInputChinese] = useState<string>(activeRawText || '');
   const [novelTitle, setNovelTitle] = useState<string>(activeNovelTitle || 'Tiểu Thuyết');
@@ -199,18 +204,24 @@ export const TranslateView: React.FC = () => {
     return convertText(inputChinese, namesList, vietphraseMap, {
       prioritizeNames: settings.prioritizeNames,
       capitalizeSentences: settings.capitalizeSentences,
+      customLuatNhan: luatNhanMap,
+      customPronouns: pronounsMap,
+      customIgnored: ignoredPhrasesList,
     });
-  }, [inputChinese, namesList, vietphraseMap, settings.prioritizeNames, settings.capitalizeSentences]);
+  }, [inputChinese, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences]);
 
   // Tự động convert tên chương sang tiếng Việt
   const convertedChapterTitle = useMemo(() => {
     if (!chapterTitle) return '';
     const conv = convertText(chapterTitle, namesList, vietphraseMap, {
       prioritizeNames: settings.prioritizeNames,
-      capitalizeSentences: settings.capitalizeSentences
+      capitalizeSentences: settings.capitalizeSentences,
+      customLuatNhan: luatNhanMap,
+      customPronouns: pronounsMap,
+      customIgnored: ignoredPhrasesList,
     });
     return conv.fullText || chapterTitle;
-  }, [chapterTitle, namesList, vietphraseMap, settings.prioritizeNames, settings.capitalizeSentences]);
+  }, [chapterTitle, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences]);
 
   // Toàn văn Vietphrase đã áp dụng các lựa chọn đổi nghĩa của người dùng (tokenOverrides)
   const effectiveTranslationText = useMemo(() => {
@@ -219,11 +230,14 @@ export const TranslateView: React.FC = () => {
     }
     return translation.paragraphs
       .map(p => {
-        const words = p.tokens.map(tok => tokenOverrides[tok.id] !== undefined ? tokenOverrides[tok.id] : tok.translated);
+        const words = p.tokens
+          .map(tok => tokenOverrides[tok.id] !== undefined ? tokenOverrides[tok.id] : tok.translated)
+          .filter(w => w !== '');
         return cleanAndFormatSentence(words.join(' '));
       })
       .join('\n\n');
   }, [translation, tokenOverrides]);
+
 
   const showToast = (msg: string, isError: boolean = false) => {
     setToastState({ message: msg, isError });
@@ -644,62 +658,48 @@ export const TranslateView: React.FC = () => {
   const fontClass = settings.fontFamily === 'serif' ? 'font-serif' : 'font-sans';
 
   const readerThemeClasses = useMemo(() => {
-    switch (settings.theme) {
+    let activeTheme = settings.theme;
+    if (activeTheme === 'system') {
+      const isSystemDark = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const currentHour = new Date().getHours();
+      const isNightTime = currentHour < 6 || currentHour >= 18;
+      activeTheme = (isSystemDark || isNightTime) ? 'dark' : 'light';
+    }
+
+    switch (activeTheme) {
       case 'light':
         return {
           bg: 'bg-white',
-          text: 'text-slate-900',
-          subtext: 'text-slate-500',
+          text: 'text-[#1a1a1a]',
+          subtext: 'text-neutral-500',
           border: 'border-slate-200',
-          card: 'bg-slate-50 border-slate-200 text-slate-800',
-          bar: 'bg-slate-100 border-slate-200 text-slate-800',
-          btn: 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200',
-          pText: 'text-slate-800',
+          card: 'bg-slate-50 border-slate-200 text-[#1a1a1a]',
+          bar: 'bg-[#f9fafb] border-slate-200 text-[#1a1a1a]',
+          btn: 'bg-white hover:bg-slate-100 text-[#1a1a1a] border-slate-300',
+          pText: 'text-[#1a1a1a]',
         };
       case 'sepia':
         return {
-          bg: 'bg-[#f4ecd8]',
-          text: 'text-[#433422]',
+          bg: 'bg-[#fbf0d9]',
+          text: 'text-[#4a3525]',
           subtext: 'text-[#6e553f]',
-          border: 'border-[#dccab0]',
-          card: 'bg-[#ede2cb] border-[#dccab0] text-[#433422]',
-          bar: 'bg-[#e8dcbf] border-[#dccab0] text-[#433422]',
-          btn: 'bg-[#ede2cb] hover:bg-[#e4d6be] text-[#433422] border-[#dccab0]',
-          pText: 'text-[#433422]',
-        };
-      case 'mint':
-        return {
-          bg: 'bg-[#eef7ee]',
-          text: 'text-[#163625]',
-          subtext: 'text-[#2e5d42]',
-          border: 'border-[#cce4cc]',
-          card: 'bg-[#e2f1e2] border-[#cce4cc] text-[#163625]',
-          bar: 'bg-[#dcf0dc] border-[#cce4cc] text-[#163625]',
-          btn: 'bg-[#e2f1e2] hover:bg-[#d6ebd6] text-[#163625] border-[#cce4cc]',
-          pText: 'text-[#163625]',
-        };
-      case 'amoled':
-        return {
-          bg: 'bg-black',
-          text: 'text-white',
-          subtext: 'text-neutral-400',
-          border: 'border-neutral-800',
-          card: 'bg-neutral-950 border-neutral-800 text-neutral-200',
-          bar: 'bg-black border-neutral-800 text-white',
-          btn: 'bg-neutral-900 hover:bg-neutral-800 text-neutral-200 border-neutral-800',
-          pText: 'text-neutral-100',
+          border: 'border-[#dfcfa8]',
+          card: 'bg-[#f2e4c4] border-[#dfcfa8] text-[#4a3525]',
+          bar: 'bg-[#f2e4c4] border-[#dfcfa8] text-[#4a3525]',
+          btn: 'bg-[#ede2cb] hover:bg-[#e4d6be] text-[#4a3525] border-[#dfcfa8]',
+          pText: 'text-[#4a3525]',
         };
       case 'dark':
       default:
         return {
-          bg: 'bg-neutral-950',
-          text: 'text-neutral-100',
+          bg: 'bg-[#121212]',
+          text: 'text-[#e1e1e1]',
           subtext: 'text-neutral-400',
-          border: 'border-neutral-800',
-          card: 'bg-neutral-900/50 border-neutral-800 text-neutral-200',
-          bar: 'bg-neutral-900/80 border-neutral-800 text-neutral-200',
-          btn: 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700',
-          pText: 'text-neutral-200',
+          border: 'border-[#2e2e2e]',
+          card: 'bg-[#1e1e1e] border-[#2e2e2e] text-[#e1e1e1]',
+          bar: 'bg-[#1e1e1e] border-[#2e2e2e] text-[#e1e1e1]',
+          btn: 'bg-[#252525] hover:bg-[#2d2d2d] text-[#e1e1e1] border-[#383838]',
+          pText: 'text-[#e1e1e1]',
         };
     }
   }, [settings.theme]);
@@ -845,8 +845,8 @@ export const TranslateView: React.FC = () => {
             onClick={handleTriggerFileInput}
             disabled={isLoadingFile}
             className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-cyan-600 hover:text-white text-cyan-400 border border-neutral-700 hover:border-cyan-500 flex items-center justify-center transition-all shadow-2xs group"
-            title="Dịch từ file văn bản (.txt, .docx)"
-            aria-label="Dịch từ file văn bản"
+            title="Mở tệp (.txt, .docx)"
+            aria-label="Mở tệp"
           >
             <FileUp size={15} className={isLoadingFile ? 'animate-bounce text-cyan-400' : 'group-hover:scale-105 transition-transform'} />
           </button>
@@ -854,8 +854,8 @@ export const TranslateView: React.FC = () => {
           <button
             onClick={handlePasteClipboard}
             className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-cyan-600 hover:text-white text-neutral-300 border border-neutral-700 hover:border-cyan-500 flex items-center justify-center transition-all shadow-2xs group"
-            title="Dán văn bản từ Clipboard"
-            aria-label="Dán từ Clipboard"
+            title="Dán từ clipboard"
+            aria-label="Dán từ clipboard"
           >
             <ClipboardPaste size={15} className="text-cyan-400 group-hover:text-white transition-colors" />
           </button>
@@ -863,8 +863,8 @@ export const TranslateView: React.FC = () => {
           <button
             onClick={handleCopyChapter}
             className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-cyan-600 hover:text-white text-neutral-300 border border-neutral-700 hover:border-cyan-500 flex items-center justify-center transition-all shadow-2xs group"
-            title="Sao chép toàn bộ chương vừa dịch vào Clipboard kèm tiêu đề"
-            aria-label="Sao chép chương vừa dịch"
+            title="Sao chép bản dịch"
+            aria-label="Sao chép bản dịch"
           >
             <Copy size={15} className="text-cyan-400 group-hover:text-white transition-colors" />
           </button>
@@ -872,8 +872,8 @@ export const TranslateView: React.FC = () => {
           <button
             onClick={handleSaveAsTxtFile}
             className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-emerald-600 hover:text-white text-neutral-300 border border-neutral-700 hover:border-emerald-500 flex items-center justify-center transition-all shadow-2xs group"
-            title="Lưu chương thành tệp văn bản .txt"
-            aria-label="Lưu thành file .txt"
+            title="Tải về file .txt"
+            aria-label="Tải về file .txt"
           >
             <Download size={15} className="text-emerald-400 group-hover:text-white transition-colors" />
           </button>
@@ -881,14 +881,14 @@ export const TranslateView: React.FC = () => {
           <button
             onClick={handleClearInput}
             className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-rose-900/60 hover:text-rose-300 text-neutral-400 border border-neutral-700 hover:border-rose-600 flex items-center justify-center transition-all shadow-2xs"
-            title="Xóa nội dung nhập"
-            aria-label="Xóa nội dung nhập"
+            title="Xóa nội dung"
+            aria-label="Xóa nội dung"
           >
             <Trash2 size={14} />
           </button>
         </div>
 
-        {/* Nhóm 2: 4 nút chế độ xem rút gọn thành ICON nhỏ gọn kèm tooltip khi giữ/rê chuột */}
+        {/* Nhóm 2: 3 nút chế độ xem rút gọn thành ICON nhỏ gọn kèm tooltip khi giữ/rê chuột */}
         <div className="flex items-center p-0.5 bg-neutral-950 rounded-lg border border-neutral-800 shrink-0 gap-0.5">
           {/* Nút 1: Vietphrase */}
           <button
@@ -898,7 +898,7 @@ export const TranslateView: React.FC = () => {
                 ? 'bg-cyan-600 text-white shadow-xs font-semibold' 
                 : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
             }`}
-            title="Vietphrase: Bản dịch cụm từ mượt mà chuẩn nghĩa"
+            title="Vietphrase"
             aria-label="Chế độ Vietphrase"
           >
             <BookOpen size={15} />
@@ -912,7 +912,7 @@ export const TranslateView: React.FC = () => {
                 ? 'bg-cyan-600 text-white shadow-xs font-semibold' 
                 : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
             }`}
-            title="Hán Việt: Dịch âm Hán Việt từng chữ"
+            title="Hán Việt"
             aria-label="Chế độ Hán Việt"
           >
             <CaseSensitive size={17} />
@@ -926,24 +926,10 @@ export const TranslateView: React.FC = () => {
                 ? 'bg-cyan-600 text-white shadow-xs font-semibold' 
                 : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
             }`}
-            title="Song Song: So sánh đối chiếu câu chữ Trung - Việt song song"
-            aria-label="Chế độ Song Song"
+            title="Song song"
+            aria-label="Chế độ Song song"
           >
             <Columns size={15} />
-          </button>
-
-          {/* Nút 4: Trung Văn gốc */}
-          <button
-            onClick={() => setViewMode('chinese')}
-            className={`w-8 h-8 rounded-md flex items-center justify-center transition-all relative group ${
-              viewMode === 'chinese' 
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold' 
-                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
-            }`}
-            title="Trung Văn: Văn bản gốc tiếng Trung (Chạm từ để tra cứu & thêm Name)"
-            aria-label="Chế độ Trung Văn"
-          >
-            <Type size={15} />
           </button>
         </div>
       </div>
@@ -1034,7 +1020,7 @@ export const TranslateView: React.FC = () => {
                 ? 'w-2 hover:w-2.5 cursor-col-resize h-full bg-neutral-800 hover:bg-cyan-500/40 active:bg-cyan-500 border-x border-neutral-700/60'
                 : 'h-2 hover:h-2.5 cursor-row-resize w-full bg-neutral-800 hover:bg-cyan-500/40 active:bg-cyan-500 border-y border-neutral-700/60'
             } ${isDraggingSplit ? 'bg-cyan-500 ring-1 ring-cyan-400' : ''}`}
-            title="Kéo thả đường kẻ để điều chỉnh kích thước giữa Trung và Vietphrase (Nhấp đúp để đặt lại 50:50)"
+            title="Kéo để chia tỷ lệ (Nhấp đúp: 50/50)"
           >
             {/* Grip handle indicator */}
             <div className={`rounded-full transition-colors ${
@@ -1057,7 +1043,13 @@ export const TranslateView: React.FC = () => {
           <div className={`shrink-0 px-3 py-2 border-b flex items-center justify-between gap-2 text-xs transition-colors ${readerThemeClasses.bar}`}>
             <div className="flex items-center gap-1.5 overflow-hidden">
               <span className="font-semibold truncate">
-                {viewMode === 'chinese' ? 'Trung' : viewMode === 'hanviet' ? 'Hán Việt' : 'Vietphrase'}
+                {viewMode === 'parallel' 
+                  ? 'Song Song' 
+                  : viewMode === 'hanviet' 
+                    ? 'Hán Việt' 
+                    : viewMode === 'chinese' 
+                      ? 'Trung' 
+                      : 'Vietphrase'}
               </span>
             </div>
 
@@ -1070,7 +1062,7 @@ export const TranslateView: React.FC = () => {
                     ? 'bg-amber-600 hover:bg-amber-500 text-white font-medium animate-pulse'
                     : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
                 }`}
-                title={isSpeaking ? (isPaused ? 'Tiếp tục đọc' : 'Tạm dừng đọc') : 'Đọc Text-to-Speech'}
+                title={isSpeaking ? (isPaused ? 'Tiếp tục đọc' : 'Tạm dừng đọc') : 'Đọc giọng nói'}
               >
                 {isSpeaking && !isPaused ? <Pause size={13} /> : <Play size={13} />}
                 <span className="hidden sm:inline">{isSpeaking ? (isPaused ? 'Tiếp tục' : 'Tạm dừng') : 'Đọc'}</span>
@@ -1090,7 +1082,7 @@ export const TranslateView: React.FC = () => {
               <button
                 onClick={handleOpenSaveModal}
                 className="p-1.5 rounded-md text-neutral-400 hover:text-cyan-400 hover:bg-neutral-800 transition-colors"
-                title="Lưu chương vào Tủ Truyện"
+                title="Lưu vào Thư Viện"
               >
                 <BookmarkPlus size={15} />
               </button>
@@ -1099,7 +1091,7 @@ export const TranslateView: React.FC = () => {
               <button
                 onClick={() => setIsReadingMode(!isReadingMode)}
                 className="p-1.5 text-neutral-400 hover:text-cyan-400 hover:bg-neutral-800 rounded-md transition-colors"
-                title={isReadingMode ? 'Hiện ô nhập tiếng Trung' : 'Chế độ đọc toàn trang'}
+                title={isReadingMode ? 'Hiện ô nhập tiếng Trung' : 'Toàn màn hình đọc'}
               >
                 {isReadingMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
               </button>
@@ -1112,8 +1104,8 @@ export const TranslateView: React.FC = () => {
               <div className="h-full flex flex-col items-center justify-center text-center p-8 text-neutral-500">
                 <FileText size={36} className="mb-2 text-neutral-600 stroke-[1.5]" />
                 <p className="text-sm">Chưa có nội dung dịch</p>
-                <p className="text-xs text-neutral-600 mt-1 max-w-sm">
-                  Bấm biểu tượng <FileUp size={14} className="inline text-cyan-400 mx-1" /> ở thanh trên để mở file văn bản (.txt, .docx), hoặc dán văn bản tiếng Trung để bắt đầu dịch.
+                <p className="text-xs text-neutral-500 mt-1 max-w-sm">
+                  Mở tệp (.txt, .docx) hoặc dán văn bản tiếng Trung để bắt đầu dịch.
                 </p>
               </div>
             ) : viewMode === 'parallel' ? (
@@ -1196,7 +1188,7 @@ export const TranslateView: React.FC = () => {
                 {/* Tiêu đề chương đã tự động convert sang tiếng Việt */}
                 {(convertedChapterTitle || chapterTitle) && (
                   <h2 className={`text-lg font-bold mb-2 pb-2 border-b ${
-                    settings.theme === 'light' || settings.theme === 'sepia' || settings.theme === 'mint' 
+                    settings.theme === 'light' || settings.theme === 'sepia' 
                       ? 'text-cyan-800 border-slate-300' 
                       : 'text-cyan-400 border-neutral-800'
                   }`}>
@@ -1463,11 +1455,16 @@ function renderPureReadingToken(
 ) {
   const displayText = overrideText !== undefined ? overrideText : tok.translated;
 
+  if (displayText === '') {
+    return null;
+  }
+
   if (tok.isPunctuation) {
     return <span key={tok.id} data-token-id={tok.id}>{displayText}</span>;
   }
 
-  const isLightOrWarm = theme === 'light' || theme === 'sepia' || theme === 'mint';
+
+  const isLightOrWarm = theme === 'light' || theme === 'sepia';
 
   // Nếu đang được đồng bộ bôi đen từ tiếng Trung
   if (isSynced) {

@@ -22,21 +22,19 @@ const MainLayout: React.FC = () => {
     let activeTheme = settings.theme;
     if (activeTheme === 'system') {
       const isSystemDark = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      activeTheme = isSystemDark ? 'dark' : 'light';
+      const currentHour = new Date().getHours();
+      const isNightTime = currentHour < 6 || currentHour >= 18;
+      activeTheme = (isSystemDark || isNightTime) ? 'dark' : 'light';
     }
 
     switch (activeTheme) {
-      case 'amoled':
-        return 'bg-black text-white';
-      case 'sepia':
-        return 'bg-[#f5edd6] text-[#4a3928] selection:bg-[#e4d3aa]';
       case 'light':
-        return 'bg-slate-100 text-slate-900 selection:bg-cyan-200';
-      case 'mint':
-        return 'bg-[#eef7ee] text-[#1d432b] selection:bg-emerald-200';
+        return 'bg-white text-[#1a1a1a] selection:bg-slate-200 selection:text-black';
+      case 'sepia':
+        return 'bg-[#fbf0d9] text-[#4a3525] selection:bg-[#ecdcb9] selection:text-[#3d2e1e]';
       case 'dark':
       default:
-        return 'bg-neutral-950 text-neutral-100 selection:bg-cyan-900 selection:text-cyan-100';
+        return 'bg-[#121212] text-[#e1e1e1] selection:bg-neutral-800 selection:text-[#e1e1e1]';
     }
   };
 

@@ -1,12 +1,19 @@
 /**
  * TTV Translate Core Engine
- * Thuật toán Forward Maximum Matching (FMM) phân đoạn và dịch Vietphrase / Hán Việt
- * Tương thích cơ chế Quick Translator và TTV Translate Android.
+ * Thuật toán Forward Maximum Matching (FMM) + QuickTranslator Multiplication Rules (Luật Nhân cấp 2)
+ * Xử lý chính xác các trợ từ như 了 (liễu), 的 (đích), 着 (trước), v.v.
+ * Tương thích 100% cơ chế Quick Translator và TTV Translate Android.
  */
 
 import { HANVIET_DICT, getHanVietChar, getPinyinChar } from '../data/hanvietData';
 import { DEFAULT_VIETPHRASE } from '../data/vietphraseData';
 import { INITIAL_NAMES, NameItem } from '../data/defaultNames';
+import { 
+  DEFAULT_PRONOUNS, 
+  DEFAULT_LUAT_NHAN, 
+  DEFAULT_IGNORED_PHRASES, 
+  DEFAULT_NAMES2 
+} from '../data/quickTranslatorData';
 
 export interface TranslatedToken {
   id: string;
@@ -37,17 +44,38 @@ export function cleanMeaningItem(str: string): string {
 
 /**
  * Phân tích cụm Vietphrase có nhiều nghĩa (phân tách bởi dấu '/')
- * Ví dụ: "Đúng."/"Vâng."/"Được." hoặc "đúng/phải/vâng"
- * Trả về nghĩa chính (đầu tiên) và danh sách tất cả các nghĩa thay thế.
+ * Hỗ trợ chuẩn QuickTranslator:
+ * Nếu chuỗi bắt đầu bằng '/' (ví dụ: "/liễu" hoặc "/liễu/rồi" hoặc "như thế/kéo//đích")
+ * thì nghĩa chính đầu tiên là RỖNG "" (lược bỏ trợ từ), các nghĩa sau là nghĩa thay thế.
  */
 export function parseVietphraseMeanings(raw: string): { primary: string; alternatives: string[] } {
   if (!raw) return { primary: '', alternatives: [] };
+
+  // Trường hợp bắt đầu bằng '/': quy ước QuickTranslator nghĩa chính là rỗng (lược bỏ trợ từ)
+  if (raw.startsWith('/')) {
+    const rawParts = raw.split('/').map(p => cleanMeaningItem(p));
+    const nonEmpties = rawParts.filter(Boolean);
+    return {
+      primary: '',
+      alternatives: nonEmpties.length > 0 ? nonEmpties : ['']
+    };
+  }
+
   if (!raw.includes('/')) {
     const clean = cleanMeaningItem(raw);
     return { primary: clean, alternatives: [clean] };
   }
 
-  const parts = raw.split('/').map(p => cleanMeaningItem(p)).filter(Boolean);
+  const rawParts = raw.split('/').map(p => cleanMeaningItem(p));
+  if (rawParts[0] === '') {
+    const nonEmpties = rawParts.filter(Boolean);
+    return {
+      primary: '',
+      alternatives: nonEmpties.length > 0 ? nonEmpties : ['']
+    };
+  }
+
+  const parts = rawParts.filter(Boolean);
   if (parts.length === 0) {
     const clean = cleanMeaningItem(raw);
     return { primary: clean, alternatives: [clean] };
@@ -61,7 +89,6 @@ export function parseVietphraseMeanings(raw: string): { primary: string; alterna
 
 /**
  * Tái sắp xếp thứ tự nghĩa trong chuỗi Vietphrase từ điển khi người dùng chọn nghĩa ưu tiên
- * Ví dụ: raw = "Đúng."/"Vâng."/"Được.", chosenMeaning = "Vâng." -> "Vâng."/"Đúng."/"Được."
  */
 export function reorderVietphraseMeanings(raw: string, chosenMeaning: string): string {
   const { alternatives } = parseVietphraseMeanings(raw);
@@ -139,8 +166,35 @@ export function normalizePunctuation(char: string): string {
   return PUNCT_MAP[char] || char;
 }
 
+// Cấu trúc luật nhân đã phân tích
+interface ParsedRule {
+  prefix: string;
+  suffix: string;
+  patternVn: string;
+  totalLength: number;
+}
+
+// Danh sách luật nhân tiền xử lý
+const PARSED_LUAT_NHAN_RULES: ParsedRule[] = Object.entries(DEFAULT_LUAT_NHAN)
+  .filter(([k]) => k.includes('{0}'))
+  .map(([k, v]) => {
+    const [prefix, suffix] = k.split('{0}');
+    return {
+      prefix: prefix || '',
+      suffix: suffix || '',
+      patternVn: v,
+      totalLength: (prefix || '').length + (suffix || '').length
+    };
+  })
+  .sort((a, b) => b.totalLength - a.totalLength);
+
+// Danh sách đại từ sắp xếp theo độ dài giảm dần
+const SORTED_PRONOUNS = Object.entries(DEFAULT_PRONOUNS)
+  .sort((a, b) => b[0].length - a[0].length);
+
 /**
  * Trình biên dịch chính của TTV Translate
+ * Áp dụng FMM + Luật Nhân cấp 2 + Bộ lọc quảng cáo
  */
 export function convertText(
   source: string,
@@ -149,6 +203,9 @@ export function convertText(
   options: {
     prioritizeNames?: boolean;
     capitalizeSentences?: boolean;
+    customLuatNhan?: Record<string, string>;
+    customPronouns?: Record<string, string>;
+    customIgnored?: string[];
   } = {}
 ): TranslationResult {
   if (!source || !source.trim()) {
@@ -161,10 +218,19 @@ export function convertText(
     };
   }
 
-  // 1. Xây dựng tra cứu Names Map
+  // 1. Tiền xử lý: Loại bỏ các cụm watermark / quảng cáo từ IgnoredChinesePhrases
+  const ignoredList = options.customIgnored || DEFAULT_IGNORED_PHRASES;
+  let cleanSource = source;
+  for (const phrase of ignoredList) {
+    if (phrase && phrase.length >= 4 && cleanSource.includes(phrase)) {
+      cleanSource = cleanSource.split(phrase).join('');
+    }
+  }
+
+
+  // 2. Xây dựng tra cứu Names Map: INITIAL_NAMES -> DEFAULT_NAMES2 -> userNames
   const customNamesMap = new Map<string, { viet: string; category: string; isCustom: boolean }>();
   
-  // Nạp Initial Names trước
   for (const n of INITIAL_NAMES) {
     customNamesMap.set(n.chinese, {
       viet: n.vietnamese,
@@ -173,7 +239,16 @@ export function convertText(
     });
   }
 
-  // Nạp User Names đè lên
+  // Nạp Names2 (Tệp Name phụ từ QuickTranslator)
+  for (const [k, v] of Object.entries(DEFAULT_NAMES2)) {
+    customNamesMap.set(k, {
+      viet: v,
+      category: 'Nhân vật',
+      isCustom: false
+    });
+  }
+
+  // Nạp User Names đè lên trên cùng
   for (const n of userNames) {
     customNamesMap.set(n.chinese, {
       viet: n.vietnamese,
@@ -182,7 +257,7 @@ export function convertText(
     });
   }
 
-  // 2. Xây dựng Vietphrase Map
+  // 3. Xây dựng Vietphrase Map
   const mergedVietphrase = new Map<string, { viet: string; isCustom: boolean }>();
   for (const [k, v] of Object.entries(DEFAULT_VIETPHRASE)) {
     mergedVietphrase.set(k, { viet: v, isCustom: false });
@@ -191,7 +266,45 @@ export function convertText(
     mergedVietphrase.set(k, { viet: v, isCustom: true });
   }
 
-  const rawParagraphs = source.split(/\r?\n/);
+  // Chuẩn bị danh sách luật nhân và đại từ (có merge custom nếu có)
+  const activePronouns = options.customPronouns ? Object.entries(options.customPronouns) : SORTED_PRONOUNS;
+  const activeLuatNhanRules = options.customLuatNhan 
+    ? Object.entries({ ...DEFAULT_LUAT_NHAN, ...options.customLuatNhan })
+        .filter(([k]) => k.includes('{0}'))
+        .map(([k, v]) => {
+          const [prefix, suffix] = k.split('{0}');
+          return {
+            prefix: prefix || '',
+            suffix: suffix || '',
+            patternVn: v,
+            totalLength: (prefix || '').length + (suffix || '').length
+          };
+        })
+        .sort((a, b) => b.totalLength - a.totalLength)
+    : PARSED_LUAT_NHAN_RULES;
+
+  // 4. Phân tách văn bản thành từng câu riêng biệt dựa vào các dấu kết thúc câu: 。！？!?
+  const rawLines = cleanSource.split(/\r?\n/);
+  const sentenceChunks: string[] = [];
+
+  for (const line of rawLines) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+
+    // Tách câu theo dấu ngắt câu tiếng Trung và tiếng Việt: 。！？!?
+    const matchedSentences = trimmedLine.match(/[^。！？!?\r\n]+(?:[。！？!?]+["'”’]?|$)/g);
+    if (matchedSentences && matchedSentences.length > 0) {
+      for (const s of matchedSentences) {
+        const trimmedS = s.trim();
+        if (trimmedS) {
+          sentenceChunks.push(trimmedS);
+        }
+      }
+    } else {
+      sentenceChunks.push(trimmedLine);
+    }
+  }
+
   const resultParagraphs: TranslationResult['paragraphs'] = [];
   const allTokens: TranslatedToken[] = [];
   const fullTextLines: string[] = [];
@@ -200,19 +313,7 @@ export function convertText(
   let tokenIndex = 0;
   const MAX_WINDOW = 12; // Cửa sổ tối đa tìm từ ghép
 
-  for (const p of rawParagraphs) {
-    if (!p.trim()) {
-      resultParagraphs.push({
-        original: '',
-        vietphrase: '',
-        hanviet: '',
-        tokens: []
-      });
-      fullTextLines.push('');
-      hanvietLines.push('');
-      continue;
-    }
-
+  for (const p of sentenceChunks) {
     const pTokens: TranslatedToken[] = [];
     const pVietWords: string[] = [];
     const pHanvietWords: string[] = [];
@@ -244,19 +345,91 @@ export function convertText(
         continue;
       }
 
-      // Tìm chuỗi dài nhất khớp trong Name hoặc Vietphrase (Forward Maximum Matching)
       let matched = false;
+
+      // ƯU TIÊN 1: So khớp THUẬT TOÁN NHÂN (Luật Nhân cấp 2: Pronouns + Names)
+      for (const rule of activeLuatNhanRules) {
+        if (rule.prefix && !p.startsWith(rule.prefix, i)) {
+          continue;
+        }
+
+        const subjIdx = i + rule.prefix.length;
+        if (subjIdx >= len) continue;
+
+        let matchedSubjCn = '';
+        let matchedSubjVn = '';
+
+        // A. Kiểm tra Pronouns trước
+        for (const [proCn, proVn] of activePronouns) {
+          if (p.startsWith(proCn, subjIdx)) {
+            if (proCn.length > matchedSubjCn.length) {
+              matchedSubjCn = proCn;
+              matchedSubjVn = proVn.split('/')[0];
+            }
+          }
+        }
+
+        // B. Kiểm tra Names nếu chưa khớp đại từ
+        if (!matchedSubjCn) {
+          for (let nw = Math.min(len - subjIdx, 6); nw >= 2; nw--) {
+            const nameSub = p.substring(subjIdx, subjIdx + nw);
+            if (customNamesMap.has(nameSub)) {
+              matchedSubjCn = nameSub;
+              matchedSubjVn = titleCase(customNamesMap.get(nameSub)!.viet);
+              break;
+            }
+          }
+        }
+
+        if (matchedSubjCn) {
+          const suffixIdx = subjIdx + matchedSubjCn.length;
+          if (!rule.suffix || p.startsWith(rule.suffix, suffixIdx)) {
+            // Khớp thành công Luật Nhân!
+            const totalRuleLen = rule.prefix.length + matchedSubjCn.length + rule.suffix.length;
+            const fullMatchedCn = p.substring(i, i + totalRuleLen);
+            const translatedVn = rule.patternVn.replace('{0}', matchedSubjVn);
+
+            const hvList: string[] = [];
+            for (const c of fullMatchedCn) {
+              hvList.push(getHanVietChar(c));
+            }
+            const hvStr = hvList.join(' ');
+
+            const token: TranslatedToken = {
+              id: `tok-${tokenIndex++}`,
+              original: fullMatchedCn,
+              translated: translatedVn,
+              hanviet: hvStr,
+              pinyin: '',
+              isName: false,
+              isCustom: false,
+              isPunctuation: false,
+            };
+
+            pTokens.push(token);
+            allTokens.push(token);
+            pVietWords.push(translatedVn);
+            pHanvietWords.push(hvStr);
+            i += totalRuleLen;
+            matched = true;
+            break;
+          }
+        }
+      }
+
+      if (matched) continue;
+
+      // ƯU TIÊN 2 & 3: Tìm chuỗi dài nhất khớp trong Name hoặc Vietphrase (Forward Maximum Matching)
       const windowLen = Math.min(len - i, MAX_WINDOW);
 
       for (let w = windowLen; w >= 2; w--) {
         const sub = p.substring(i, i + w);
 
-        // 1. Khớp Name (Tên riêng, môn phái, địa danh)
+        // 2. Khớp Name (Tên riêng, môn phái, địa danh)
         if (customNamesMap.has(sub)) {
           const nameInfo = customNamesMap.get(sub)!;
           const translatedName = titleCase(nameInfo.viet);
           
-          // Tạo Hán Việt và Pinyin cho cụm
           const hvList: string[] = [];
           const pyList: string[] = [];
           for (const c of sub) {
@@ -287,7 +460,7 @@ export function convertText(
           break;
         }
 
-        // 2. Khớp Vietphrase
+        // 3. Khớp Vietphrase
         if (mergedVietphrase.has(sub)) {
           const vpInfo = mergedVietphrase.get(sub)!;
           const { primary, alternatives } = parseVietphraseMeanings(vpInfo.viet);
@@ -315,7 +488,9 @@ export function convertText(
 
           pTokens.push(token);
           allTokens.push(token);
-          pVietWords.push(primary);
+          if (primary !== '') {
+            pVietWords.push(primary);
+          }
           pHanvietWords.push(hvStr);
           i += w;
           matched = true;
@@ -325,12 +500,11 @@ export function convertText(
 
       if (matched) continue;
 
-      // 3. Nếu không khớp cụm dài, tra cứu 1 ký tự đơn
+      // 4. Nếu không khớp cụm dài, tra cứu 1 ký tự đơn
       const singleChar = p[i];
       const hv = getHanVietChar(singleChar);
       const py = getPinyinChar(singleChar);
 
-      // Tra cứu xem có trong Vietphrase 1 từ không
       let singleTranslation = hv;
       let isCust = false;
       let singleAlternatives: string[] | undefined = undefined;
@@ -364,9 +538,20 @@ export function convertText(
 
       pTokens.push(token);
       allTokens.push(token);
-      pVietWords.push(singleTranslation);
+      if (singleTranslation !== '') {
+        pVietWords.push(singleTranslation);
+      }
       pHanvietWords.push(hv);
       i++;
+    }
+
+    // Viết hoa chữ cái đầu tiên của câu cho token chữ đầu tiên
+    for (const tok of pTokens) {
+      if (!tok.isPunctuation && tok.translated) {
+        tok.translated = capitalizeFirstLetter(tok.translated);
+        tok.hanviet = capitalizeFirstLetter(tok.hanviet);
+        break;
+      }
     }
 
     // Ghép câu mượt mà
@@ -394,18 +579,37 @@ export function convertText(
 }
 
 /**
+ * Viết hoa chữ cái đầu tiên (bỏ qua ký tự mở đầu như dấu ngoặc, nháy nếu có)
+ */
+export function capitalizeFirstLetter(str: string): string {
+  if (!str) return '';
+  const trimmed = str.trim();
+  const match = trimmed.match(/^([^a-zA-Zà-ỹÀ-Ỹ]*)([a-zA-Zà-ỹÀ-Ỹ])(.*)$/s);
+  if (match) {
+    const prefix = match[1];
+    const firstChar = match[2].toUpperCase();
+    const rest = match[3];
+    return prefix + firstChar + rest;
+  }
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+/**
  * Làm sạch khoảng trắng xung quanh dấu câu và viết hoa đầu câu
  */
 export function cleanAndFormatSentence(str: string): string {
   if (!str) return '';
   let res = str
-    .replace(/\s+([,.:;!?\)\]])/g, '$1')
-    .replace(/([\(\[])\s+/g, '$1')
+    .replace(/\s+([,.:;!?\)\]”’"'])/g, '$1')
+    .replace(/([\(\[“‘"'])\s+/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Viết hoa chữ cái đầu tiên của câu sau dấu chấm, chấm than, chấm hỏi
-  res = res.replace(/(^|[.!?]\s+)([a-zà-ỹ])/g, (_, p1, p2) => p1 + p2.toUpperCase());
+  // Viết hoa chữ cái đầu tiên của câu
+  res = capitalizeFirstLetter(res);
+
+  // Viết hoa chữ cái sau dấu chấm, chấm than, chấm hỏi bên trong
+  res = res.replace(/([.!?。！？]\s*)([a-zà-ỹ])/g, (_, p1, p2) => p1 + p2.toUpperCase());
   return res;
 }
 
@@ -427,7 +631,12 @@ export function inspectChinesePhrase(
   // Kiểm tra đã có trong Name hay chưa
   const inUserNames = userNames.find(n => n.chinese === phrase);
   const inDefaultNames = INITIAL_NAMES.find(n => n.chinese === phrase);
-  const existingName = inUserNames || inDefaultNames;
+  const inDefaultNames2 = DEFAULT_NAMES2[phrase];
+  const existingName = inUserNames 
+    ? inUserNames.vietnamese 
+    : inDefaultNames 
+      ? inDefaultNames.vietnamese 
+      : inDefaultNames2 || null;
 
   // Kiểm tra Vietphrase
   const inUserVp = userVietphrase[phrase];
@@ -439,8 +648,8 @@ export function inspectChinesePhrase(
     hanviet,
     hanvietTitle: titleCase(hanviet),
     pinyin,
-    existingName: existingName ? existingName.vietnamese : null,
+    existingName,
     existingVp: existingVp || null,
-    suggestedVietnamese: existingName?.vietnamese || existingVp || titleCase(hanviet)
+    suggestedVietnamese: existingName || existingVp || titleCase(hanviet)
   };
 }

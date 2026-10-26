@@ -1,6 +1,6 @@
 {
-  "summary":  "Kế hoạch chi tiết tối ưu hóa thanh menu 3 gạch (Drawer Navigation) theo mẫu thiết kế Google AI Studio: tích hợp thẻ thống kê 3 block vuông kèm bánh răng xóa thống kê, thanh công cụ Cài đặt phía trên, và mục tài khoản Google linh hoạt ở dưới cùng.",
-  "updatedAt":  "2026-10-25T09:27:16.772530269Z",
+  "summary":  "Kế hoạch tối ưu giao diện theo chuẩn phong cách Google AI Studio: Tinh giản bảng màu thành 4 chế độ (Sáng, Tối, Sepia, Hệ thống), đổi tên nhãn thành 'Giao diện', loại bỏ triệt để các ghi chú thừa thãi, tối ưu popover viền mảnh công nghệ cao và giữ tooltip ngắn gọn khi rê chuột.",
+  "updatedAt":  "2026-10-26T07:54:09.359741246Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
