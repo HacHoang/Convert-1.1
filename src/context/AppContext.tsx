@@ -106,7 +106,7 @@ export function parseChapterHeader(title: string): { prefix: string; name: strin
 }
 
 export type AppTheme = 'light' | 'dark' | 'sepia' | 'system';
-export type AppTab = 'translate' | 'library' | 'dictionary' | 'settings';
+export type AppTab = 'translate' | 'batch' | 'library' | 'dictionary' | 'settings';
 
 export interface AppSettings {
   theme: AppTheme;
@@ -181,6 +181,7 @@ interface AppContextType {
   
   // Cụm Bỏ Qua (IgnoredPhrases)
   ignoredPhrasesList: string[];
+  addIgnoredPhrase: (chinese: string) => void;
   
   // Thao tác xóa cụm từ chung
   deletePhrase: (chinese: string) => void;
@@ -622,6 +623,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return next;
     });
     deleteVietphraseItem(cn).catch(console.error);
+  };
+
+  const addIgnoredPhrase = (chinese: string) => {
+    const cleanCn = chinese.trim();
+    if (!cleanCn) return;
+    setIgnoredPhrasesList(prev => {
+      if (prev.includes(cleanCn)) return prev;
+      const updated = [cleanCn, ...prev];
+      saveIgnoredPhrasesBatch([cleanCn]).catch(console.error);
+      return updated;
+    });
   };
 
   const importEntriesBatch = async (
@@ -1082,6 +1094,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         luatNhanMap,
         pronounsMap,
         ignoredPhrasesList,
+        addIgnoredPhrase,
         deletePhrase,
         importEntriesBatch,
         isImportingLargeFile,

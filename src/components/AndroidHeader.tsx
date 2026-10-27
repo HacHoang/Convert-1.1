@@ -29,7 +29,7 @@ import {
   Bell,
   Search,
   Key,
-  History,
+  Files,
   LayoutDashboard,
   FileText,
   Sparkles,
@@ -289,6 +289,52 @@ export const AndroidHeader: React.FC = () => {
             <h1 className="text-base font-bold tracking-tight text-white leading-none group-hover:text-cyan-300 transition-colors">
               {currentNavTitle}
             </h1>
+          </div>
+
+          {/* Thanh điều hướng nhanh cho PC (Chỉ hiển thị trên PC md:flex) */}
+          <div className="hidden md:flex items-center gap-1 ml-3 pl-3 border-l border-neutral-800 text-xs">
+            <button
+              onClick={() => handleSelectNav('translate', 'Dịch Nhanh')}
+              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
+                activeTab === 'translate'
+                  ? 'bg-neutral-800 text-cyan-400 font-semibold'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+              }`}
+            >
+              Dịch Nhanh
+            </button>
+            <button
+              onClick={() => handleSelectNav('batch', 'Dịch Nhiều Chương')}
+              className={`px-2.5 py-1 rounded-md transition-colors font-medium flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'batch'
+                  ? 'bg-cyan-600 text-white font-semibold shadow-xs'
+                  : 'text-neutral-300 hover:text-white hover:bg-neutral-800/60'
+              }`}
+              title="Dịch hàng loạt nhiều chương (tối ưu hóa cho PC)"
+            >
+              <Files size={13} />
+              <span>Dịch Nhiều Chương</span>
+            </button>
+            <button
+              onClick={() => handleSelectNav('library', 'Thư Viện')}
+              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
+                activeTab === 'library'
+                  ? 'bg-neutral-800 text-cyan-400 font-semibold'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+              }`}
+            >
+              Thư Viện
+            </button>
+            <button
+              onClick={() => handleSelectNav('dictionary', 'Từ Điển')}
+              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
+                activeTab === 'dictionary'
+                  ? 'bg-neutral-800 text-cyan-400 font-semibold'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+              }`}
+            >
+              Từ Điển
+            </button>
           </div>
         </div>
 
@@ -586,18 +632,22 @@ export const AndroidHeader: React.FC = () => {
                   )}
                 </button>
 
-                {/* Lịch Sử Dịch */}
+                {/* Dịch Nhiều Chương (Chỉ trên PC) */}
                 <button
-                  onClick={() => {
-                    handleSelectNav('translate', 'Lịch Sử Dịch');
-                    showToast('Đang mở màn hình dịch & các tác vụ gần đây');
-                  }}
-                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-neutral-300 hover:bg-neutral-800/70 hover:text-white transition-all cursor-pointer"
+                  onClick={() => handleSelectNav('batch', 'Dịch Nhiều Chương')}
+                  className={`hidden md:flex w-full items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
+                    activeTab === 'batch'
+                      ? 'bg-[#28292c] text-white font-medium shadow-sm'
+                      : 'text-neutral-300 hover:bg-neutral-800/70 hover:text-white'
+                  }`}
                 >
                   <div className="flex items-center gap-3">
-                    <History size={17} className="text-neutral-400" />
-                    <span className="text-sm">Lịch Sử Dịch</span>
+                    <Files size={17} className={activeTab === 'batch' ? 'text-cyan-400' : 'text-neutral-400'} />
+                    <span className="text-sm">Dịch Nhiều Chương (PC)</span>
                   </div>
+                  {activeTab === 'batch' && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                  )}
                 </button>
               </div>
 

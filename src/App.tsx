@@ -9,6 +9,7 @@ import React from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { AndroidHeader } from './components/AndroidHeader';
 import { TranslateView } from './components/views/TranslateView';
+import { BatchTranslateView } from './components/views/BatchTranslateView';
 import { LibraryView } from './components/views/LibraryView';
 import { DictionaryView } from './components/views/DictionaryView';
 import { SettingsView } from './components/views/SettingsView';
@@ -56,6 +57,7 @@ const MainLayout: React.FC = () => {
         {/* Tab View Container - Tràn toàn bộ chiều cao màn hình */}
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
           {activeTab === 'translate' && <TranslateView />}
+          {activeTab === 'batch' && <BatchTranslateView />}
           {activeTab === 'library' && <LibraryView />}
           {activeTab === 'dictionary' && <DictionaryView />}
           {activeTab === 'settings' && <SettingsView />}

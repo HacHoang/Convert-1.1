@@ -40,7 +40,8 @@ import {
   X,
   Check,
   Folder,
-  AlertCircle
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 
 export const TranslateView: React.FC = () => {
@@ -65,9 +66,8 @@ export const TranslateView: React.FC = () => {
     luatNhanMap,
     pronounsMap,
     ignoredPhrasesList,
+    addIgnoredPhrase,
   } = useApp();
-
-
 
   const [inputChinese, setInputChinese] = useState<string>(activeRawText || '');
   const [novelTitle, setNovelTitle] = useState<string>(activeNovelTitle || 'Tiểu Thuyết');
@@ -102,6 +102,10 @@ export const TranslateView: React.FC = () => {
   // Danh sách từ được người dùng chọn đổi nghĩa trong chương hiện tại
   const [tokenOverrides, setTokenOverrides] = useState<Record<string, string>>({});
 
+  // Trạng thái làm mới bản dịch thủ công khi cập nhật từ điển/names
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   // Tùy chọn đặt làm nghĩa ưu tiên trong từ điển Vietphrase (khi chọn nghĩa thay thế)
   const [savePriorityToDict, setSavePriorityToDict] = useState<boolean>(false);
 
@@ -114,6 +118,8 @@ export const TranslateView: React.FC = () => {
     visible: boolean;
     targetToken?: TranslatedToken;
     alternatives?: string[];
+    chineseOriginal?: string;
+    hanvietText?: string;
   }>({ text: '', source: null, x: 0, y: 0, visible: false });
 
   // Tỷ lệ phần trăm chia giữa 2 khung Trung & Vietphrase (15% - 85%)
@@ -208,7 +214,7 @@ export const TranslateView: React.FC = () => {
       customPronouns: pronounsMap,
       customIgnored: ignoredPhrasesList,
     });
-  }, [inputChinese, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences]);
+  }, [inputChinese, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences, refreshTick]);
 
   // Tự động convert tên chương sang tiếng Việt
   const convertedChapterTitle = useMemo(() => {
@@ -221,7 +227,7 @@ export const TranslateView: React.FC = () => {
       customIgnored: ignoredPhrasesList,
     });
     return conv.fullText || chapterTitle;
-  }, [chapterTitle, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences]);
+  }, [chapterTitle, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences, refreshTick]);
 
   // Toàn văn Vietphrase đã áp dụng các lựa chọn đổi nghĩa của người dùng (tokenOverrides)
   const effectiveTranslationText = useMemo(() => {
@@ -331,6 +337,16 @@ export const TranslateView: React.FC = () => {
 
     navigator.clipboard.writeText(formattedContent);
     showToast('✓ Đã sao chép chương vào Clipboard!');
+  };
+
+  // Nút Làm mới (Refresh) bản dịch - recalculate ngay lập tức khi vừa cập nhật từ điển/names
+  const handleRefreshTranslation = () => {
+    setIsRefreshing(true);
+    setRefreshTick(prev => prev + 1);
+    setTokenOverrides({});
+    setTimeout(() => {
+      setIsRefreshing(false);
+    }, 400);
   };
 
   // Nút 4: Lưu thành file văn bản (.txt)
@@ -559,10 +575,22 @@ export const TranslateView: React.FC = () => {
       }
 
       if (targetTokenId) {
+        matchedTokenIds.add(targetTokenId);
         targetTok = translation.tokens.find(t => t.id === targetTokenId);
       }
 
-      // 2. Tìm token khớp văn bản và highlight đồng bộ
+      // 2. Quét các phần tử span mang data-token-id giao thoa với vùng bôi đen (selection)
+      try {
+        const allSpans = document.querySelectorAll<HTMLElement>('[data-token-id]');
+        allSpans.forEach(span => {
+          if (selection.containsNode(span, true)) {
+            const tId = span.dataset.tokenId;
+            if (tId) matchedTokenIds.add(tId);
+          }
+        });
+      } catch {}
+
+      // 3. Tìm token khớp văn bản và highlight đồng bộ
       const selLower = selectedText.toLowerCase();
       translation.tokens.forEach(tok => {
         if (!tok.isPunctuation && tok.translated) {
@@ -596,6 +624,49 @@ export const TranslateView: React.FC = () => {
 
     setSyncedTokenIds(matchedTokenIds);
 
+    // Trích xuất chữ Hán gốc tương ứng và tên Hán Việt viết hoa
+    const orderedMatched = translation.tokens.filter(t => matchedTokenIds.has(t.id));
+    let derivedChinese = '';
+    let derivedHanviet = '';
+
+    if (source === 'vietphrase') {
+      if (orderedMatched.length > 0) {
+        derivedChinese = orderedMatched.map(t => t.original).join('');
+        derivedHanviet = orderedMatched
+          .map(t => {
+            if (t.hanviet) {
+              return t.hanviet
+                .trim()
+                .split(/\s+/)
+                .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+                .join(' ');
+            }
+            return '';
+          })
+          .filter(Boolean)
+          .join(' ');
+      } else if (targetTok) {
+        derivedChinese = targetTok.original;
+        derivedHanviet = targetTok.hanviet
+          ? targetTok.hanviet
+              .trim()
+              .split(/\s+/)
+              .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+              .join(' ')
+          : '';
+      }
+    } else {
+      derivedChinese = selectedText;
+      const lookup = inspectChinesePhrase(selectedText, namesList, vietphraseMap);
+      derivedHanviet = lookup.hanviet
+        ? lookup.hanviet
+            .trim()
+            .split(/\s+/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            .join(' ')
+        : '';
+    }
+
     // Tính danh sách nghĩa thay thế (khác nghĩa đang hiển thị)
     let availableAlternatives: string[] | undefined = undefined;
     if (targetTok && targetTok.alternatives && targetTok.alternatives.length > 1) {
@@ -613,6 +684,8 @@ export const TranslateView: React.FC = () => {
       visible: true,
       targetToken: targetTok,
       alternatives: availableAlternatives,
+      chineseOriginal: derivedChinese || undefined,
+      hanvietText: derivedHanviet || undefined,
     });
   };
 
@@ -781,13 +854,18 @@ export const TranslateView: React.FC = () => {
 
           {/* Hàng nút công cụ thao tác */}
           <div className="flex items-center gap-1">
-            <span className="font-serif px-2 py-0.5 text-cyan-300 font-semibold max-w-28 truncate border-r border-neutral-800">
-              {selectionInfo.text}
+            <span 
+              className="font-serif px-2 py-0.5 text-cyan-300 font-semibold max-w-32 truncate border-r border-neutral-800"
+              title={selectionInfo.chineseOriginal ? `Gốc: ${selectionInfo.chineseOriginal} | Đang chọn: ${selectionInfo.text}` : selectionInfo.text}
+            >
+              {selectionInfo.chineseOriginal || selectionInfo.text}
             </span>
 
             <button
               onClick={() => {
-                openInspectModal(selectionInfo.text, '', 'Nhân vật');
+                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                const targetVn = selectionInfo.hanvietText || (selectionInfo.source === 'vietphrase' ? selectionInfo.text : '');
+                openInspectModal(targetCn, targetVn, 'Nhân vật');
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
               className="flex items-center gap-1 px-2.5 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg font-medium transition-colors"
@@ -799,7 +877,9 @@ export const TranslateView: React.FC = () => {
 
             <button
               onClick={() => {
-                openInspectModal(selectionInfo.text, '', 'Khác');
+                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                const targetVn = selectionInfo.source === 'vietphrase' ? selectionInfo.text.toLowerCase() : '';
+                openInspectModal(targetCn, targetVn, 'Khác');
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
               className="flex items-center gap-1 px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-lg font-medium transition-colors"
@@ -811,8 +891,22 @@ export const TranslateView: React.FC = () => {
 
             <button
               onClick={() => {
-                deletePhrase(selectionInfo.text);
-                showToast('Đã xóa cụm từ khỏi từ điển');
+                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                addIgnoredPhrase(targetCn);
+                showToast(`Đã thêm "${targetCn}" vào Tệp Bỏ qua`);
+                setSelectionInfo(prev => ({ ...prev, visible: false }));
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 bg-neutral-800 hover:bg-amber-900/60 text-amber-300 hover:text-white rounded-lg font-medium transition-colors"
+              title="Thêm vào Tệp Bỏ qua (IgnoreChinesephrase.txt)"
+            >
+              <span>+ Bỏ qua</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                deletePhrase(targetCn);
+                showToast(`Đã xóa cụm "${targetCn}" khỏi từ điển`);
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
               className="flex items-center gap-1 px-2.5 py-1 bg-neutral-800 hover:bg-rose-900/70 text-rose-300 hover:text-white rounded-lg font-medium transition-colors border border-transparent hover:border-rose-700/60"
@@ -824,7 +918,8 @@ export const TranslateView: React.FC = () => {
 
             <button
               onClick={() => {
-                const lookup = inspectChinesePhrase(selectionInfo.text, namesList, vietphraseMap);
+                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                const lookup = inspectChinesePhrase(targetCn, namesList, vietphraseMap);
                 showToast(`HV: ${lookup.hanviet} | Pinyin: ${lookup.pinyin}`);
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
@@ -839,7 +934,7 @@ export const TranslateView: React.FC = () => {
 
       {/* Top Controls Bar - Toàn bộ các nút dạng ICON siêu nhỏ gọn */}
       <div className="shrink-0 p-2.5 px-3 bg-neutral-900 border-b border-neutral-800 flex items-center justify-between gap-2 text-xs">
-        {/* Nhóm 1: 5 nút chức năng (Mở file, Dán, Copy, Tải file, Xóa) */}
+        {/* Nhóm 1: 6 nút chức năng (Mở file, Dán, Copy, Làm mới, Tải file, Xóa) */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <button
             onClick={handleTriggerFileInput}
@@ -867,6 +962,21 @@ export const TranslateView: React.FC = () => {
             aria-label="Sao chép bản dịch"
           >
             <Copy size={15} className="text-cyan-400 group-hover:text-white transition-colors" />
+          </button>
+
+          <button
+            onClick={handleRefreshTranslation}
+            disabled={isRefreshing}
+            className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-cyan-600 hover:text-white text-neutral-300 border border-neutral-700 hover:border-cyan-500 flex items-center justify-center transition-all shadow-2xs group"
+            title="Làm mới bản dịch"
+            aria-label="Làm mới bản dịch"
+          >
+            <RefreshCw 
+              size={14} 
+              className={`text-cyan-400 group-hover:text-white transition-all ${
+                isRefreshing ? 'animate-spin text-white' : 'group-hover:rotate-45'
+              }`} 
+            />
           </button>
 
           <button
