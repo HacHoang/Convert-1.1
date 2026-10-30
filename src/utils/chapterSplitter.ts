@@ -3,11 +3,11 @@
  * Tối ưu hóa hiệu năng cao cho truyện lớn lên đến 2000+ chương
  */
 
-import mammoth from 'mammoth';
 
 export interface RawChapterItem {
   id: string;
   chapterNum: number;
+  sourceChapterNum?: number;
   rawTitle: string;
   content: string;
   charCount: number;
@@ -181,6 +181,7 @@ export async function readFileContent(file: File): Promise<{ title: string; cont
   if (isDocx) {
     try {
       const arrayBuffer = await file.arrayBuffer();
+      const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ arrayBuffer });
       const text = result.value || '';
       const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -213,9 +214,16 @@ export async function parseMultipleFiles(
 ): Promise<RawChapterItem[]> {
   const fileArray = Array.from(files);
   const results: Array<{ file: File; chapterNum: number; content: string; title: string }> = [];
+  const epubChapters: RawChapterItem[] = [];
 
   for (let i = 0; i < fileArray.length; i++) {
     const f = fileArray[i];
+    if (/\.epub$/i.test(f.name)) {
+      const { importEpub } = await import('./epubImport');
+      epubChapters.push(...await importEpub(f, startSeq + results.length + epubChapters.length));
+      continue;
+    }
+    if (!/\.(txt|docx)$/i.test(f.name)) throw new Error(`Định dạng không được hỗ trợ: ${f.name}. Chọn TXT, DOCX hoặc EPUB.`);
     const { title, content } = await readFileContent(f);
     const numFromTitle = extractChapterNumber(title, extractChapterNumber(f.name, startSeq + i));
     results.push({
@@ -229,11 +237,13 @@ export async function parseMultipleFiles(
   // Sắp xếp các chương theo số thứ tự tăng dần
   results.sort((a, b) => a.chapterNum - b.chapterNum);
 
-  return results.map((r, idx) => ({
+  const textChapters = results.map((r, idx) => ({
     id: `file-chap-${Date.now()}-${idx}`,
     chapterNum: r.chapterNum,
     rawTitle: r.title,
     content: r.content,
     charCount: r.content.length,
   }));
+  // Preserve EPUB spine order; numeric titles can reset between volumes.
+  return [...textChapters, ...epubChapters];
 }

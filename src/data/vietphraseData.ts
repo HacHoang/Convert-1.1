@@ -1,5 +1,5 @@
 /**
- * Bộ từ điển Vietphrase gốc tích hợp sẵn của TTV Translate
+ * Bộ từ điển Vietphrase gốc tích hợp sẵn của Convert
  * Chứa hơn 500 cụm từ phổ biến nhất trong tiểu thuyết mạng Trung Quốc.
  */
 

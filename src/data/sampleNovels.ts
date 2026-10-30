@@ -1,5 +1,5 @@
 /**
- * Chương truyện mẫu tiếng Trung để người dùng test nhanh TTV Translate
+ * Chương truyện mẫu tiếng Trung để người dùng test nhanh Convert
  */
 
 export interface SampleChapter {

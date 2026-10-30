@@ -1,13 +1,14 @@
 /**
  * IndexedDB Multi-Store Storage Helper for Convert App
  * Hỗ trợ lưu trữ toàn bộ các bảng từ điển QuickTranslator (~40MB+)
- * Vượt qua giới hạn 5MB của localStorage, không bị lỗi QuotaExceededError.
+ * Bộ mặc định lưu theo snapshot; chỉnh sửa lưu riêng. Quota vẫn phụ thuộc trình duyệt.
  */
 
 import { NameItem } from '../data/defaultNames';
 
 const DB_NAME = 'ConvertAppDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+export const STORE_APP = 'app_store';
 
 export const STORE_NAMES = 'names_store'; // Names phụ / cá nhân
 export const STORE_NAMES_MAIN = 'names_main_store'; // Names chính gốc (136k)
@@ -24,6 +25,7 @@ export function openDB(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
 
+      if (!db.objectStoreNames.contains(STORE_APP)) db.createObjectStore(STORE_APP);
       if (!db.objectStoreNames.contains(STORE_NAMES)) {
         const store = db.createObjectStore(STORE_NAMES, { keyPath: 'id' });
         store.createIndex('chinese', 'chinese', { unique: false });
@@ -54,450 +56,149 @@ export function openDB(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
     request.onerror = () => reject(request.error);
   });
 }
 
-// ------------------- NAMES CÁ NHÂN / NAMES PHỤ STORAGE -------------------
+// Large defaults are one snapshot per dictionary. Individual edits stay in the
+// original object stores; tombstones keep deleted default entries from returning.
+export const DICTIONARY_STORES = [STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRASE,
+  STORE_LUAT_NHAN, STORE_PRONOUNS, STORE_IGNORED, STORE_PHIEN_AM];
+const snapshotKey = (store: string) => `dictionarySnapshot:${store}`;
+const deletedKey = (store: string) => `dictionaryDeleted:${store}`;
+const keyPathFor = (store: string) => store === STORE_NAMES ? 'id' : store === STORE_LUAT_NHAN ? 'pattern' : store === STORE_IGNORED ? 'phrase' : 'chinese';
 
-export async function getStoredNames(): Promise<NameItem[]> {
+async function mutate(stores: string[], action: (tx: IDBTransaction) => void): Promise<void> {
+  const db = await openDB();
   try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAMES, 'readonly');
-      const store = tx.objectStore(STORE_NAMES);
-      const request = store.getAll();
-
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(stores, 'readwrite');
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('Không thể lưu dữ liệu trình duyệt'));
+      try { action(tx); } catch (error) { tx.abort(); reject(error); }
     });
-  } catch (err) {
-    console.error('Failed to load names from IndexedDB', err);
-    return [];
-  }
+  } finally { db.close(); }
 }
 
-export async function saveNameItem(item: NameItem): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES);
-    const req = store.put(item);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+export function mergeDictionaryRows<T>(baseline: T[], overrides: T[], deleted: string[], keyPath: string): T[] {
+  if (!baseline.length) return overrides;
+  if (!overrides.length && !deleted.length) return baseline;
+  const removed = new Set(deleted);
+  const key = (row: T) => (row as Record<string, string>)[keyPath];
+  const map = new Map<string, T>();
+  for (const row of baseline) if (!removed.has(key(row))) map.set(key(row), row);
+  // Re-adding an entry takes precedence over an earlier deletion.
+  for (const row of overrides) map.set(key(row), row);
+  return Array.from(map.values());
 }
 
-export async function deleteNameItem(id: string): Promise<void> {
+// Reads fail explicitly: failed storage must never become a successful empty backup.
+export async function readStore<T>(storeName: string): Promise<T[]> {
   const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES);
-    const req = store.delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  try {
+    return await new Promise<T[]>((resolve, reject) => {
+      const tx = db.transaction([storeName, STORE_APP], 'readonly');
+      const rows = tx.objectStore(storeName).getAll();
+      const baseline = tx.objectStore(STORE_APP).get(snapshotKey(storeName));
+      const deleted = tx.objectStore(STORE_APP).get(deletedKey(storeName));
+      tx.oncomplete = () => resolve(mergeDictionaryRows(baseline.result || [], rows.result || [], deleted.result || [], keyPathFor(storeName)));
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('Không đọc được dữ liệu trình duyệt'));
+    });
+  } finally { db.close(); }
 }
 
-export async function deleteNameByChinese(chinese: string): Promise<void> {
+export async function readAppValue<T>(key: string): Promise<T | undefined> {
   const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES);
-    const index = store.index('chinese');
-    const req = index.getAllKeys(chinese);
-    req.onsuccess = () => {
-      const keys = req.result;
-      if (!keys || keys.length === 0) {
-        resolve();
-        return;
-      }
-      for (const k of keys) {
-        store.delete(k);
-      }
-      resolve();
+  try {
+    return await new Promise<T | undefined>((resolve, reject) => {
+      const tx = db.transaction(STORE_APP, 'readonly');
+      const req = tx.objectStore(STORE_APP).get(key);
+      tx.oncomplete = () => resolve(req.result);
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('Không đọc được dữ liệu trình duyệt'));
+    });
+  } finally { db.close(); }
+}
+
+export const writeAppValue = (key: string, value: unknown): Promise<void> =>
+  mutate([STORE_APP], tx => { tx.objectStore(STORE_APP).put(value, key); });
+
+const writeRows = (name: string, rows: unknown[]): Promise<void> => rows.length ?
+  mutate([name], tx => { for (const row of rows) tx.objectStore(name).put(row); }) : Promise.resolve();
+
+async function deleteKeys(name: string, keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  await mutate([name, STORE_APP], tx => {
+    const app = tx.objectStore(STORE_APP);
+    const request = app.get(deletedKey(name));
+    request.onsuccess = () => {
+      try { app.put([...new Set([...(request.result || []), ...keys])], deletedKey(name)); }
+      catch { tx.abort(); }
     };
-    req.onerror = () => reject(req.error);
+    for (const key of keys) tx.objectStore(name).delete(key);
   });
 }
 
-
-export async function saveNamesBatch(items: NameItem[]): Promise<void> {
-  if (items.length === 0) return;
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES);
-    for (const item of items) {
-      store.put(item);
+// Replace snapshots and clear prior edits in ONE transaction. Bulk snapshots avoid
+// millions of IndexedDB put requests during a fresh install or a full restore.
+export async function replaceStores(stores: Record<string, unknown[]>, appValues: Record<string, unknown> = {}): Promise<void> {
+  for (const [name, rows] of Object.entries(stores)) {
+    if (!DICTIONARY_STORES.includes(name) || !Array.isArray(rows)) throw new Error('Bảng từ điển không hợp lệ');
+    const keyPath = keyPathFor(name);
+    const keys = new Set<string>();
+    for (const row of rows) {
+      const key = row && typeof row === 'object' ? (row as Record<string, unknown>)[keyPath] : undefined;
+      if (typeof key !== 'string' || keys.has(key)) throw new Error('Khóa từ điển không hợp lệ hoặc bị trùng');
+      keys.add(key);
     }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function clearNamesStore(): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES);
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// ------------------- VIETPHRASE STORAGE -------------------
-
-export interface VietphraseRecord {
-  chinese: string;
-  vietnamese: string;
-}
-
-export async function getStoredVietphrase(): Promise<Record<string, string>> {
-  try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_VIETPHRASE, 'readonly');
-      const store = tx.objectStore(STORE_VIETPHRASE);
-      const request = store.getAll();
-
-      request.onsuccess = () => {
-        const records: VietphraseRecord[] = request.result || [];
-        const map: Record<string, string> = {};
-        for (const r of records) {
-          map[r.chinese] = r.vietnamese;
-        }
-        resolve(map);
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.error('Failed to load vietphrase from IndexedDB', err);
-    return {};
   }
-}
-
-export async function saveVietphraseItem(chinese: string, vietnamese: string): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_VIETPHRASE, 'readwrite');
-    const store = tx.objectStore(STORE_VIETPHRASE);
-    const req = store.put({ chinese, vietnamese });
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-export async function deleteVietphraseItem(chinese: string): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_VIETPHRASE, 'readwrite');
-    const store = tx.objectStore(STORE_VIETPHRASE);
-    const req = store.delete(chinese);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-export async function saveVietphraseBatch(items: VietphraseRecord[]): Promise<void> {
-  if (items.length === 0) return;
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_VIETPHRASE, 'readwrite');
-    const store = tx.objectStore(STORE_VIETPHRASE);
-    for (const item of items) {
-      store.put(item);
+  await mutate([...Object.keys(stores), STORE_APP], tx => {
+    const app = tx.objectStore(STORE_APP);
+    for (const [name, rows] of Object.entries(stores)) {
+      tx.objectStore(name).clear();
+      app.put(rows, snapshotKey(name));
+      app.delete(deletedKey(name));
     }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    for (const [key, value] of Object.entries(appValues)) app.put(value, key);
   });
 }
 
-export async function clearVietphraseStore(): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_VIETPHRASE, 'readwrite');
-    const store = tx.objectStore(STORE_VIETPHRASE);
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+export interface VietphraseRecord { chinese: string; vietnamese: string }
+export interface LuatNhanRecord { pattern: string; translation: string }
+const getMap = async (name: string): Promise<Record<string, string>> => Object.fromEntries(
+  (await readStore<VietphraseRecord>(name)).map(row => [row.chinese, row.vietnamese]));
+
+export const getStoredNames = () => readStore<NameItem>(STORE_NAMES);
+export const saveNameItem = (item: NameItem) => writeRows(STORE_NAMES, [item]);
+export const saveNamesBatch = (items: NameItem[]) => writeRows(STORE_NAMES, items);
+export const deleteNameItem = (id: string) => deleteKeys(STORE_NAMES, [id]);
+export async function deleteNameByChinese(chinese: string): Promise<void> {
+  const rows = await getStoredNames();
+  await deleteKeys(STORE_NAMES, rows.filter(row => row.chinese === chinese).map(row => row.id));
 }
-
-// ------------------- NAMES CHÍNH (NAMES_MAIN) -------------------
-
-export async function getStoredNamesMain(): Promise<Record<string, string>> {
-  try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAMES_MAIN, 'readonly');
-      const store = tx.objectStore(STORE_NAMES_MAIN);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const records: { chinese: string; vietnamese: string }[] = req.result || [];
-        const map: Record<string, string> = {};
-        for (const r of records) {
-          map[r.chinese] = r.vietnamese;
-        }
-        resolve(map);
-      };
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return {};
-  }
-}
-
-export async function saveNamesMainBatch(items: { chinese: string; vietnamese: string }[]): Promise<void> {
-  if (items.length === 0) return;
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES_MAIN, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES_MAIN);
-    for (const item of items) {
-      store.put(item);
-    }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function clearNamesMainStore(): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAMES_MAIN, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES_MAIN);
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// ------------------- LUẬT NHÂN STORAGE -------------------
-
-export interface LuatNhanRecord {
-  pattern: string; // e.g. "在{0}的面前"
-  translation: string; // e.g. "trước mặt {0}"
-}
-
+export const clearNamesStore = () => replaceStores({ [STORE_NAMES]: [] });
+export const getStoredVietphrase = () => getMap(STORE_VIETPHRASE);
+export const saveVietphraseItem = (chinese: string, vietnamese: string) => writeRows(STORE_VIETPHRASE, [{ chinese, vietnamese }]);
+export const saveVietphraseBatch = (items: VietphraseRecord[]) => writeRows(STORE_VIETPHRASE, items);
+export const deleteVietphraseItem = (chinese: string) => deleteKeys(STORE_VIETPHRASE, [chinese]);
+export const clearVietphraseStore = () => replaceStores({ [STORE_VIETPHRASE]: [] });
+export const getStoredNamesMain = () => getMap(STORE_NAMES_MAIN);
+export const saveNamesMainBatch = (items: VietphraseRecord[]) => writeRows(STORE_NAMES_MAIN, items);
+export const clearNamesMainStore = () => replaceStores({ [STORE_NAMES_MAIN]: [] });
 export async function getStoredLuatNhan(): Promise<Record<string, string>> {
-  try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_LUAT_NHAN, 'readonly');
-      const store = tx.objectStore(STORE_LUAT_NHAN);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const records: LuatNhanRecord[] = req.result || [];
-        const map: Record<string, string> = {};
-        for (const r of records) {
-          map[r.pattern] = r.translation;
-        }
-        resolve(map);
-      };
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return {};
-  }
+  return Object.fromEntries((await readStore<LuatNhanRecord>(STORE_LUAT_NHAN)).map(row => [row.pattern, row.translation]));
 }
-
-export async function saveLuatNhanBatch(items: LuatNhanRecord[]): Promise<void> {
-  if (items.length === 0) return;
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_LUAT_NHAN, 'readwrite');
-    const store = tx.objectStore(STORE_LUAT_NHAN);
-    for (const item of items) {
-      store.put(item);
-    }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function clearLuatNhanStore(): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_LUAT_NHAN, 'readwrite');
-    const store = tx.objectStore(STORE_LUAT_NHAN);
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// ------------------- ĐẠI TỪ (PRONOUNS) STORAGE -------------------
-
-export async function getStoredPronouns(): Promise<Record<string, string>> {
-  try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_PRONOUNS, 'readonly');
-      const store = tx.objectStore(STORE_PRONOUNS);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const records: { chinese: string; vietnamese: string }[] = req.result || [];
-        const map: Record<string, string> = {};
-        for (const r of records) {
-          map[r.chinese] = r.vietnamese;
-        }
-        resolve(map);
-      };
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return {};
-  }
-}
-
-export async function savePronounsBatch(items: { chinese: string; vietnamese: string }[]): Promise<void> {
-  if (items.length === 0) return;
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PRONOUNS, 'readwrite');
-    const store = tx.objectStore(STORE_PRONOUNS);
-    for (const item of items) {
-      store.put(item);
-    }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function clearPronounsStore(): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PRONOUNS, 'readwrite');
-    const store = tx.objectStore(STORE_PRONOUNS);
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// ------------------- CỤM TỪ BỎ QUA (IGNORED PHRASES) STORAGE -------------------
-
+export const saveLuatNhanBatch = (items: LuatNhanRecord[]) => writeRows(STORE_LUAT_NHAN, items);
+export const clearLuatNhanStore = () => replaceStores({ [STORE_LUAT_NHAN]: [] });
+export const getStoredPronouns = () => getMap(STORE_PRONOUNS);
+export const savePronounsBatch = (items: VietphraseRecord[]) => writeRows(STORE_PRONOUNS, items);
+export const clearPronounsStore = () => replaceStores({ [STORE_PRONOUNS]: [] });
 export async function getStoredIgnoredPhrases(): Promise<string[]> {
-  try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_IGNORED, 'readonly');
-      const store = tx.objectStore(STORE_IGNORED);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const records: { phrase: string }[] = req.result || [];
-        resolve(records.map(r => r.phrase));
-      };
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return [];
-  }
+  return (await readStore<{ phrase: string }>(STORE_IGNORED)).map(row => row.phrase);
 }
-
-export async function saveIgnoredPhrasesBatch(phrases: string[]): Promise<void> {
-  if (phrases.length === 0) return;
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_IGNORED, 'readwrite');
-    const store = tx.objectStore(STORE_IGNORED);
-    for (const p of phrases) {
-      if (p) store.put({ phrase: p });
-    }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function clearIgnoredPhrasesStore(): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_IGNORED, 'readwrite');
-    const store = tx.objectStore(STORE_IGNORED);
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// ------------------- XUẤT / NHẬP TOÀN BỘ CƠ SỞ DỮ LIỆU (ALL-IN-ONE) -------------------
-
-export interface FullDatabaseBackup {
-  version: number;
-  exportedAt: number;
-  namesCustom: NameItem[];
-  namesMain: Record<string, string>;
-  vietphrase: Record<string, string>;
-  luatNhan: Record<string, string>;
-  pronouns: Record<string, string>;
-  ignoredPhrases: string[];
-}
-
-export async function exportAllDatabases(): Promise<string> {
-  const [namesCustom, namesMain, vietphrase, luatNhan, pronouns, ignoredPhrases] = await Promise.all([
-    getStoredNames(),
-    getStoredNamesMain(),
-    getStoredVietphrase(),
-    getStoredLuatNhan(),
-    getStoredPronouns(),
-    getStoredIgnoredPhrases()
-  ]);
-
-  const backup: FullDatabaseBackup = {
-    version: DB_VERSION,
-    exportedAt: Date.now(),
-    namesCustom,
-    namesMain,
-    vietphrase,
-    luatNhan,
-    pronouns,
-    ignoredPhrases
-  };
-
-  return JSON.stringify(backup, null, 2);
-}
-
-export async function importAllDatabases(jsonString: string): Promise<{ success: boolean; message: string }> {
-  try {
-    const data: FullDatabaseBackup = JSON.parse(jsonString);
-    if (!data || typeof data !== 'object') {
-      throw new Error('Định dạng tệp sao lưu không hợp lệ');
-    }
-
-    // Nạp từng store
-    if (Array.isArray(data.namesCustom) && data.namesCustom.length > 0) {
-      await saveNamesBatch(data.namesCustom);
-    }
-
-    if (data.namesMain && typeof data.namesMain === 'object') {
-      const items = Object.entries(data.namesMain).map(([k, v]) => ({ chinese: k, vietnamese: v }));
-      await saveNamesMainBatch(items);
-    }
-
-    if (data.vietphrase && typeof data.vietphrase === 'object') {
-      const items = Object.entries(data.vietphrase).map(([k, v]) => ({ chinese: k, vietnamese: v }));
-      await saveVietphraseBatch(items);
-    }
-
-    if (data.luatNhan && typeof data.luatNhan === 'object') {
-      const items = Object.entries(data.luatNhan).map(([k, v]) => ({ pattern: k, translation: v }));
-      await saveLuatNhanBatch(items);
-    }
-
-    if (data.pronouns && typeof data.pronouns === 'object') {
-      const items = Object.entries(data.pronouns).map(([k, v]) => ({ chinese: k, vietnamese: v }));
-      await savePronounsBatch(items);
-    }
-
-    if (Array.isArray(data.ignoredPhrases) && data.ignoredPhrases.length > 0) {
-      await saveIgnoredPhrasesBatch(data.ignoredPhrases);
-    }
-
-    return { success: true, message: 'Khôi phục cơ sở dữ liệu thành công!' };
-  } catch (err: any) {
-    return { success: false, message: err.message || 'Lỗi khi nhập dữ liệu' };
-  }
-}
+export const saveIgnoredPhrasesBatch = (phrases: string[]) => writeRows(STORE_IGNORED, phrases.filter(Boolean).map(phrase => ({ phrase })));
+export const deleteIgnoredPhrases = (phrases: string[]) => deleteKeys(STORE_IGNORED, phrases);
+export const clearIgnoredPhrasesStore = () => replaceStores({ [STORE_IGNORED]: [] });

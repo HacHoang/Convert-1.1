@@ -1,6 +1,6 @@
 /**
  * QuickTranslator Default Core Data Bundle
- * Tích hợp tự động từ bộ tệp QuickTranslator TTV
+ * Tích hợp tự động từ bộ tệp QuickTranslator
  */
 
 export const DEFAULT_PRONOUNS: Record<string, string> = {

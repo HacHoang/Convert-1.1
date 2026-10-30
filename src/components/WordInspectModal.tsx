@@ -1,6 +1,7 @@
+import { styleNameDictionary } from '../utils/translationStyle';
 /**
  * Modal tra từ & Thêm Name / Vietphrase tức thì
- * Tính năng cốt lõi đặc trưng của QuickTranslator & TTV Translate
+ * Tính năng cốt lõi đặc trưng của QuickTranslator & Convert
  */
 
 import React, { useState, useEffect } from 'react';
@@ -8,6 +9,9 @@ import { useApp } from '../context/AppContext';
 import { inspectChinesePhrase } from '../utils/translatorEngine';
 import { NameItem } from '../data/defaultNames';
 import { X, Copy, Check } from 'lucide-react';
+import { DEFAULT_VIETPHRASE } from '../data/vietphraseData';
+
+const capitalizeName = (value: string) => value.replace(/\p{L}[\p{L}\p{M}]*/gu, word => word.charAt(0).toLocaleUpperCase('vi') + word.slice(1));
 
 export const WordInspectModal: React.FC = () => {
   const {
@@ -17,6 +21,7 @@ export const WordInspectModal: React.FC = () => {
     addVietphrase,
     addIgnoredPhrase,
     namesList,
+    namesMainMap,
     vietphraseMap,
   } = useApp();
 
@@ -35,31 +40,38 @@ export const WordInspectModal: React.FC = () => {
       setNote('');
       setSaveSuccess(null);
 
-      // Tra cứu tự động gợi ý
       const lookup = inspectChinesePhrase(cn, namesList, vietphraseMap);
-      let initialVn = inspectModal.initialVietnamese;
-      if (!initialVn) {
-        if (inspectModal.initialCategory === 'Nhân vật' && lookup.hanviet) {
-          initialVn = lookup.hanviet
-            .split(/\s+/)
-            .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-            .join(' ');
-        } else {
-          initialVn = lookup.suggestedVietnamese;
-        }
-      }
+      const styleName = styleNameDictionary(inspectModal.style || 'neutral')[cn];
+      const initialVn = inspectModal.target === 'name'
+        ? capitalizeName(lookup.existingName || styleName || namesMainMap[cn] || lookup.hanviet)
+        : (lookup.existingVp ?? inspectModal.initialVietnamese ?? lookup.hanviet);
       setVietnamese(initialVn);
     }
-  }, [inspectModal.isOpen, inspectModal.initialChinese, inspectModal.initialVietnamese, inspectModal.initialCategory, namesList, vietphraseMap]);
+  }, [inspectModal.isOpen, inspectModal.initialChinese, inspectModal.initialVietnamese, inspectModal.initialCategory, inspectModal.target, inspectModal.style, namesList, namesMainMap, vietphraseMap]);
 
   if (!inspectModal.isOpen) return null;
 
   const currentLookup = inspectChinesePhrase(chinese, namesList, vietphraseMap);
 
+  const existingStyleName = styleNameDictionary(inspectModal.style || 'neutral')[chinese.trim()];
+  const hasName = currentLookup.existingName !== null || Object.hasOwn(namesMainMap, chinese.trim()) || Boolean(existingStyleName);
+  const hasVietphrase = Object.hasOwn(vietphraseMap, chinese.trim()) || Object.hasOwn(DEFAULT_VIETPHRASE, chinese.trim());
+
+  const handleChineseChange = (value: string) => {
+    setChinese(value);
+    const key = value.trim();
+    const lookup = inspectChinesePhrase(key, namesList, vietphraseMap);
+    setVietnamese(inspectModal.target === 'name'
+      ? capitalizeName(lookup.existingName || styleNameDictionary(inspectModal.style || 'neutral')[key] || namesMainMap[key] || lookup.hanviet)
+      : lookup.existingVp ?? lookup.hanviet);
+  };
+
   const handleSaveName = () => {
     if (!chinese.trim() || !vietnamese.trim()) return;
-    addName(chinese, vietnamese, category, note);
-    setSaveSuccess(`Đã lưu "${chinese} = ${vietnamese}" vào Tệp Name!`);
+    const name = capitalizeName(vietnamese.trim());
+    setVietnamese(name);
+    addName(chinese, name, category, note);
+    setSaveSuccess(`${hasName ? 'Đã cập nhật' : 'Đã lưu'} "${chinese} = ${name}" vào Tệp Name!`);
     setTimeout(() => {
       closeInspectModal();
     }, 900);
@@ -68,7 +80,7 @@ export const WordInspectModal: React.FC = () => {
   const handleSaveVietphrase = () => {
     if (!chinese.trim() || !vietnamese.trim()) return;
     addVietphrase(chinese, vietnamese.toLowerCase());
-    setSaveSuccess(`Đã lưu "${chinese} = ${vietnamese.toLowerCase()}" vào Tệp Vietphrase!`);
+    setSaveSuccess(`${hasVietphrase ? 'Đã cập nhật' : 'Đã lưu'} "${chinese} = ${vietnamese.toLowerCase()}" vào Tệp Vietphrase!`);
     setTimeout(() => {
       closeInspectModal();
     }, 900);
@@ -92,54 +104,54 @@ export const WordInspectModal: React.FC = () => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-200">
       <div 
-        className="relative w-full max-w-md rounded-xl bg-[#141417] border border-zinc-800/80 text-zinc-100 shadow-2xl p-5 overflow-hidden"
+        className="relative w-full max-w-md rounded-xl bg-surface border border-line/80 text-main shadow-2xl p-5 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-zinc-800/80 mb-4">
+        <div className="flex items-center justify-between pb-3 border-b border-line/80 mb-4">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-            <h3 className="font-medium text-sm text-zinc-100 tracking-tight">
+            <span className="w-2 h-2 rounded-full bg-accent-soft"></span>
+            <h3 className="font-medium text-sm text-main tracking-tight">
               Tra cứu &amp; Cập nhật từ điển
             </h3>
           </div>
           <button
             onClick={closeInspectModal}
-            className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+            className="p-1 rounded-lg text-muted hover:text-main hover:bg-raised transition-colors"
           >
             <X size={16} />
           </button>
         </div>
 
         {/* Live Lookup Quick Preview */}
-        <div className="bg-[#09090b] rounded-lg p-3 mb-4 border border-zinc-800/80 space-y-2">
+        <div className="bg-surface rounded-lg p-3 mb-4 border border-line/80 space-y-2">
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-serif text-cyan-300 tracking-wide select-all">
+            <span className="text-2xl font-serif text-accent tracking-wide select-all">
               {chinese || 'Chưa nhập chữ'}
             </span>
             <button
               onClick={() => handleCopy(chinese)}
-              className="text-xs text-zinc-400 hover:text-cyan-300 flex items-center gap-1 transition-colors"
+              className="text-xs text-muted hover:text-accent flex items-center gap-1 transition-colors"
             >
               {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
               Sao chép
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 text-xs pt-1.5 border-t border-zinc-800/60">
+          <div className="grid grid-cols-2 gap-2 text-xs pt-1.5 border-t border-line/60">
             <div>
-              <span className="text-zinc-500">Hán Việt: </span>
-              <span className="text-zinc-200 font-medium">{currentLookup.hanviet || '—'}</span>
+              <span className="text-muted">Hán Việt: </span>
+              <span className="text-main font-medium">{currentLookup.hanviet || '—'}</span>
             </div>
             <div>
-              <span className="text-zinc-500">Pinyin: </span>
-              <span className="text-zinc-300 font-mono">{currentLookup.pinyin || '—'}</span>
+              <span className="text-muted">Pinyin: </span>
+              <span className="text-main font-mono">{currentLookup.pinyin || '—'}</span>
             </div>
           </div>
 
           {currentLookup.existingName && (
-            <div className="text-xs text-cyan-400/90 bg-cyan-950/30 px-2 py-1 rounded border border-cyan-800/30">
-              Có trong Name: <strong className="text-cyan-200">{currentLookup.existingName}</strong>
+            <div className="text-xs text-accent/90 bg-accent-soft/30 px-2 py-1 rounded border border-accent/30">
+              Có trong Name: <strong className="text-accent">{currentLookup.existingName}</strong>
             </div>
           )}
           {currentLookup.existingVp && !currentLookup.existingName && (
@@ -152,40 +164,45 @@ export const WordInspectModal: React.FC = () => {
         {/* Input Fields */}
         <div className="space-y-3 mb-4">
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
+            <label className="block text-xs font-medium text-muted mb-1">
               Chữ Hán gốc
             </label>
             <input
               type="text"
               value={chinese}
-              onChange={(e) => setChinese(e.target.value)}
+              onChange={(e) => handleChineseChange(e.target.value)}
               placeholder="Nhập chữ Hán..."
-              className="w-full bg-[#09090b] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-cyan-500"
+              className="w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-main placeholder-subtle focus:outline-none focus:border-accent"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
-              Nghĩa / Tên tiếng Việt
+            <label className="block text-xs font-medium text-muted mb-1">
+              {inspectModal.target === 'vietphrase' ? 'Vietphrase' : 'Name'}
             </label>
             <input
               type="text"
               value={vietnamese}
-              onChange={(e) => setVietnamese(e.target.value)}
-              placeholder="Nhập nghĩa dịch..."
-              className="w-full bg-[#09090b] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-cyan-500 font-medium"
+              onChange={(e) => setVietnamese(inspectModal.target === 'name' ? capitalizeName(e.target.value) : e.target.value)}
+              placeholder={inspectModal.target === 'vietphrase' ? 'Nhập Vietphrase...' : 'Nhập Name...'}
+              className="w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-main placeholder-subtle focus:outline-none focus:border-accent font-medium"
             />
+            {inspectModal.target === 'name' && inspectModal.style === 'western' && (
+              <p className="mt-1.5 text-xs leading-relaxed text-muted">
+                Văn phong phương Tây ưu tiên tên tiếng Anh đã có trong từ điển. Name bạn lưu được ưu tiên hơn gợi ý tự động.
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">
+              <label className="block text-xs font-medium text-muted mb-1">
                 Phân loại Name
               </label>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value as NameItem['category'])}
-                className="w-full bg-[#09090b] border border-zinc-800 rounded-lg px-2.5 py-2 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500"
+                className="w-full bg-surface border border-line rounded-lg px-2.5 py-2 text-xs text-main focus:outline-none focus:border-accent"
               >
                 <option value="Nhân vật">Nhân vật</option>
                 <option value="Địa danh">Địa danh</option>
@@ -197,7 +214,7 @@ export const WordInspectModal: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">
+              <label className="block text-xs font-medium text-muted mb-1">
                 Ghi chú (Tùy chọn)
               </label>
               <input
@@ -205,7 +222,7 @@ export const WordInspectModal: React.FC = () => {
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 placeholder="Ghi chú..."
-                className="w-full bg-[#09090b] border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-cyan-500"
+                className="w-full bg-surface border border-line rounded-lg px-3 py-2 text-xs text-main placeholder-subtle focus:outline-none focus:border-accent"
               />
             </div>
           </div>
@@ -223,23 +240,23 @@ export const WordInspectModal: React.FC = () => {
           <button
             onClick={handleSaveName}
             disabled={!chinese.trim() || !vietnamese.trim()}
-            className="flex items-center justify-center bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:hover:bg-cyan-600 text-white font-medium py-2 px-2 rounded-lg text-xs transition-colors shadow-xs"
+            className="flex items-center justify-center bg-accent hover:bg-accent disabled:opacity-40 disabled:hover:bg-accent text-main font-medium py-2 px-2 rounded-lg text-xs transition-colors shadow-xs"
           >
-            Lưu vào Name
+            {hasName ? 'Cập nhật Name' : 'Lưu vào Name'}
           </button>
 
           <button
             onClick={handleSaveVietphrase}
             disabled={!chinese.trim() || !vietnamese.trim()}
-            className="flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:hover:bg-zinc-800 text-zinc-200 font-medium py-2 px-2 rounded-lg text-xs transition-colors border border-zinc-700/60"
+            className="flex items-center justify-center bg-raised hover:bg-hover disabled:opacity-40 disabled:hover:bg-raised text-main font-medium py-2 px-2 rounded-lg text-xs transition-colors border border-line/60"
           >
-            Lưu vào Vietphrase
+            {hasVietphrase ? 'Cập nhật Vietphrase' : 'Lưu vào Vietphrase'}
           </button>
 
           <button
             onClick={handleSaveIgnored}
             disabled={!chinese.trim()}
-            className="flex items-center justify-center bg-zinc-800 hover:bg-amber-900/40 text-zinc-300 hover:text-amber-200 disabled:opacity-40 disabled:hover:bg-zinc-800 font-medium py-2 px-2 rounded-lg text-xs transition-colors border border-zinc-700/60"
+            className="flex items-center justify-center bg-raised hover:bg-amber-900/40 text-main hover:text-amber-200 disabled:opacity-40 disabled:hover:bg-raised font-medium py-2 px-2 rounded-lg text-xs transition-colors border border-line/60"
           >
             Lưu vào Bỏ qua
           </button>

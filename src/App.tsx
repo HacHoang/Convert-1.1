@@ -1,53 +1,40 @@
 /**
- * TTV Translate Android Web Clone
+ * Convert Android Web Clone
  * Chuyên dịch & convert tiểu thuyết Trung - Hán Việt - Vietphrase
  * Không yêu cầu đăng nhập, hoạt động hoàn toàn offline
  * Toàn bộ điều hướng nằm gọn trong nút Menu 3 gạch (Side Drawer) ở thanh trên
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
+import { useResolvedTheme } from './utils/theme';
 import { AppProvider, useApp } from './context/AppContext';
 import { AndroidHeader } from './components/AndroidHeader';
 import { TranslateView } from './components/views/TranslateView';
-import { BatchTranslateView } from './components/views/BatchTranslateView';
-import { LibraryView } from './components/views/LibraryView';
-import { DictionaryView } from './components/views/DictionaryView';
-import { SettingsView } from './components/views/SettingsView';
+const BatchTranslateView = React.lazy(() => import('./components/views/BatchTranslateView').then(module => ({ default: module.BatchTranslateView })));
+const LibraryView = React.lazy(() => import('./components/views/LibraryView').then(module => ({ default: module.LibraryView })));
+const DictionaryView = React.lazy(() => import('./components/views/DictionaryView').then(module => ({ default: module.DictionaryView })));
+const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
 import { WordInspectModal } from './components/WordInspectModal';
+const WebImportView = React.lazy(() => import('./components/views/WebImportView').then(module => ({ default: module.WebImportView })));
 
 const MainLayout: React.FC = () => {
   const { activeTab, settings } = useApp();
-
-  // Color theme classes mapping
-  const getThemeClass = () => {
-    let activeTheme = settings.theme;
-    if (activeTheme === 'system') {
-      const isSystemDark = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      const currentHour = new Date().getHours();
-      const isNightTime = currentHour < 6 || currentHour >= 18;
-      activeTheme = (isSystemDark || isNightTime) ? 'dark' : 'light';
-    }
-
-    switch (activeTheme) {
-      case 'light':
-        return 'bg-white text-[#1a1a1a] selection:bg-slate-200 selection:text-black';
-      case 'sepia':
-        return 'bg-[#fbf0d9] text-[#4a3525] selection:bg-[#ecdcb9] selection:text-[#3d2e1e]';
-      case 'dark':
-      default:
-        return 'bg-[#121212] text-[#e1e1e1] selection:bg-neutral-800 selection:text-[#e1e1e1]';
-    }
-  };
+  const theme = useResolvedTheme(settings.theme);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
+  }, [theme]);
 
   const isMobileFrame = settings.displayMode === 'mobile_frame';
 
   return (
-    <div className={`min-h-screen w-full flex items-center justify-center ${getThemeClass()} transition-colors duration-200 font-sans`}>
+    <div data-theme={theme} className="studio-ui min-h-screen w-full flex items-center justify-center bg-canvas text-main selection:bg-accent-soft transition-colors duration-200 font-sans antialiased">
       {/* Container: either mobile frame or full responsive */}
       <div 
-        className={`w-full flex flex-col h-screen overflow-hidden ${
+        id="app-frame"
+        className={`@container/app relative isolate w-full flex flex-col h-screen overflow-hidden ${
           isMobileFrame 
-            ? 'max-w-md max-h-[92vh] rounded-[36px] border-4 border-neutral-700/80 shadow-2xl overflow-hidden my-auto' 
+            ? 'max-w-md max-h-[92vh] rounded-3xl border border-neutral-700/80 overflow-hidden my-auto'
             : 'max-w-6xl mx-auto border-x border-neutral-800/60'
         }`}
       >
@@ -57,10 +44,11 @@ const MainLayout: React.FC = () => {
         {/* Tab View Container - Tràn toàn bộ chiều cao màn hình */}
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
           {activeTab === 'translate' && <TranslateView />}
-          {activeTab === 'batch' && <BatchTranslateView />}
-          {activeTab === 'library' && <LibraryView />}
-          {activeTab === 'dictionary' && <DictionaryView />}
-          {activeTab === 'settings' && <SettingsView />}
+          {activeTab === 'batch' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><BatchTranslateView /></React.Suspense>}
+          {activeTab === 'web' && <React.Suspense fallback={<div className="p-4 text-sm text-muted">Đang mở Truyện từ web…</div>}><WebImportView /></React.Suspense>}
+          {activeTab === 'library' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><LibraryView /></React.Suspense>}
+          {activeTab === 'dictionary' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><DictionaryView /></React.Suspense>}
+          {activeTab === 'settings' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><SettingsView /></React.Suspense>}
         </main>
       </div>
 

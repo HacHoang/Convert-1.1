@@ -1,3 +1,4 @@
+import { STYLE_LABELS, STYLE_PHRASES, saveStylePhrase, stylePhraseDictionary, type TranslationStyle } from '../../utils/translationStyle';
 /**
  * Tab Cơ Sở Dữ Liệu & Từ Điển (Unified Database View)
  * Trung tâm hợp nhất toàn bộ dữ liệu từ điển của Quick Translator:
@@ -11,7 +12,7 @@
  * Hỗ trợ Import/Export từng file riêng lẻ hoặc TOÀN BỘ cùng một lúc.
  */
 
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp, DictCategoryType } from '../../context/AppContext';
 import { NameItem } from '../../data/defaultNames';
 import { DEFAULT_VIETPHRASE } from '../../data/vietphraseData';
@@ -40,8 +41,17 @@ import {
 
 const PAGE_SIZE = 50;
 
-type UnifiedTab = 'vietphrase' | 'names_main' | 'names_custom' | 'phienam' | 'luatnhan' | 'pronouns_ignored';
+type UnifiedTab = 'vietphrase' | 'names_main' | 'names_custom' | 'phienam' | 'luatnhan' | 'pronouns' | 'vietphrase_merged' | 'lacviet' | 'thieuchuu' | 'babylon' | 'ignored_chinese';
 
+const REFERENCE_TABS = {
+  vietphrase_merged: { label: 'VietPhrase file gộp', file: 'Vietphrase_cho_file_g_p_ef2c75e8.txt' },
+  lacviet: { label: 'Từ điển Lạc Việt', file: 'LacViet_724c32ac.txt' },
+  thieuchuu: { label: 'Từ điển Thiều Chửu', file: 'ThieuChuu_0a3529be.txt' },
+  babylon: { label: 'Từ điển Babylon', file: 'Babylon_bcaa6311.txt' },
+  ignored_chinese: { label: 'Ignored Chinese Phrases', file: 'IgnoredChinesePhrases_771ed2c0.txt' },
+} as const;
+type ReferenceTab = keyof typeof REFERENCE_TABS;
+type DictionaryRow = { chinese: string; vietnamese: string };
 // Tiện ích tải file về máy
 function downloadTextFile(filename: string, content: string) {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -82,6 +92,34 @@ export const DictionaryView: React.FC = () => {
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<UnifiedTab>('vietphrase');
+  const [referenceData, setReferenceData] = useState<Partial<Record<ReferenceTab, DictionaryRow[]>>>({});
+  const [referenceError, setReferenceError] = useState('');
+  const referenceTab = activeTab in REFERENCE_TABS ? activeTab as ReferenceTab : null;
+  const isReadOnly = referenceTab !== null || activeTab === 'phienam';
+  useEffect(() => {
+    if (!referenceTab || referenceData[referenceTab]) return;
+    const controller = new AbortController();
+    setReferenceError('');
+    fetch(`/assets/aistudio/${REFERENCE_TABS[referenceTab].file}`, { signal: controller.signal })
+      .then(response => { if (!response.ok) throw new Error('Không tải được tệp từ điển'); return response.text(); })
+      .then(content => {
+        const entries = new Map<string, string>();
+        for (const raw of content.split(/\r?\n/)) {
+          const line = raw.replace(/^\uFEFF/, '').trim();
+          if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+          const index = line.indexOf('=');
+          if (referenceTab === 'ignored_chinese') entries.set(index > 0 ? line.slice(0, index) : line, '(Cụm tiếng Trung bỏ qua)');
+          else if (index > 0) entries.set(line.slice(0, index).trim(), line.slice(index + 1).trim());
+        }
+        setReferenceData(previous => ({ ...previous, [referenceTab]: Array.from(entries, ([chinese, vietnamese]) => ({ chinese, vietnamese })) }));
+      })
+      .catch(error => { if (!controller.signal.aborted) setReferenceError(error.message); });
+    return () => controller.abort();
+  }, [referenceTab, referenceData]);
+  const [phraseStyle, setPhraseStyle] = useState<TranslationStyle | 'all' | 'unclassified'>('all');
+  const [styleVersion, setStyleVersion] = useState(0);
+  const classifiedKeys = useMemo(() => new Set((Object.keys(STYLE_PHRASES) as TranslationStyle[]).flatMap(style => Object.keys(stylePhraseDictionary(style)))), [styleVersion]);
+  const selectedStylePhrases = useMemo(() => phraseStyle === 'all' || phraseStyle === 'unclassified' ? {} : stylePhraseDictionary(phraseStyle), [phraseStyle, styleVersion]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -139,13 +177,13 @@ export const DictionaryView: React.FC = () => {
 
   // 1. Dữ liệu Vietphrase gộp (DEFAULT + User)
   const fullVietphrase = useMemo(() => {
-    const map = { ...DEFAULT_VIETPHRASE, ...vietphraseMap };
+    const map = { ...DEFAULT_VIETPHRASE, ...vietphraseMap, ...selectedStylePhrases };
     return Object.entries(map).map(([chinese, vietnamese]) => ({
       chinese,
       vietnamese,
       isCustom: Boolean(vietphraseMap[chinese]),
     }));
-  }, [vietphraseMap]);
+  }, [vietphraseMap, selectedStylePhrases]);
 
   // 2. Dữ liệu Names Chính (namesMainMap)
   const fullNamesMain = useMemo(() => {
@@ -191,11 +229,13 @@ export const DictionaryView: React.FC = () => {
   // Lọc dữ liệu theo tab và từ khóa
   const filteredData = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
+    if (referenceTab) return (referenceData[referenceTab] ?? []).filter(item => !term || item.chinese.toLowerCase().includes(term) || item.vietnamese.toLowerCase().includes(term));
 
     switch (activeTab) {
       case 'vietphrase': {
-        if (!term) return fullVietphrase;
-        return fullVietphrase.filter(item =>
+        const scoped = phraseStyle === 'all' ? fullVietphrase : fullVietphrase.filter(item => phraseStyle === 'unclassified' ? !classifiedKeys.has(item.chinese) : Object.hasOwn(selectedStylePhrases, item.chinese));
+        if (!term) return scoped;
+        return scoped.filter(item =>
           item.chinese.toLowerCase().includes(term) || item.vietnamese.toLowerCase().includes(term)
         );
       }
@@ -233,8 +273,8 @@ export const DictionaryView: React.FC = () => {
           item.chinese.toLowerCase().includes(term) || item.vietnamese.toLowerCase().includes(term)
         );
       }
-      case 'pronouns_ignored': {
-        const combined = [...fullPronouns, ...fullIgnored];
+      case 'pronouns': {
+        const combined = fullPronouns;
         if (!term) return combined;
         return combined.filter(item =>
           item.chinese.toLowerCase().includes(term) || item.vietnamese.toLowerCase().includes(term)
@@ -243,7 +283,7 @@ export const DictionaryView: React.FC = () => {
       default:
         return [];
     }
-  }, [activeTab, searchTerm, selectedCategory, fullVietphrase, fullNamesMain, namesList, fullPhienAm, fullLuatNhan, fullPronouns, fullIgnored]);
+  }, [referenceTab, referenceData, activeTab, searchTerm, selectedCategory, phraseStyle, classifiedKeys, selectedStylePhrases, fullVietphrase, fullNamesMain, namesList, fullPhienAm, fullLuatNhan, fullPronouns, fullIgnored]);
 
   // Phân trang
   const totalItems = filteredData.length;
@@ -258,7 +298,7 @@ export const DictionaryView: React.FC = () => {
 
   // Nạp 1-click toàn bộ dữ liệu gốc QuickTranslator từ các file asset
   const handleLoadAllDefaults = async () => {
-    if (!window.confirm('Bạn có muốn nạp trọn bộ từ điển gốc Quick Translator (Phiên âm 12.5k từ, Luật Nhân, Đại Từ, Names2 và Names chính) vào IndexedDB?')) {
+    if (!window.confirm('Khôi phục toàn bộ từ điển về bộ mặc định đi kèm Convert? Các chỉnh sửa từ điển hiện tại sẽ được thay thế.')) {
       return;
     }
 
@@ -273,7 +313,7 @@ export const DictionaryView: React.FC = () => {
       });
 
       if (res.success) {
-        showToast('Đã nạp trọn bộ dữ liệu Quick Translator thành công!');
+        showToast('Đã khôi phục bộ từ điển mặc định của Convert!');
       } else {
         showToast(res.message, true);
       }
@@ -292,7 +332,7 @@ export const DictionaryView: React.FC = () => {
       setProcessingStatus('Đang đóng gói toàn bộ cơ sở dữ liệu...');
       const json = await exportAllDatabasesJson();
       const dateStr = new Date().toISOString().slice(0, 10);
-      downloadTextFile(`QuickTranslator_FullBackup_${dateStr}.json`, json);
+      downloadTextFile(`convert_backup_${dateStr}.json`, json);
       showToast('Đã xuất toàn bộ cơ sở dữ liệu thành công!');
     } catch (err: any) {
       showToast(err.message || 'Lỗi khi xuất dữ liệu', true);
@@ -328,6 +368,13 @@ export const DictionaryView: React.FC = () => {
 
   // Xuất tệp TXT cho tab hiện tại theo cú pháp QuickTranslator
   const handleExportCurrentTab = () => {
+    if (referenceTab) {
+      const rows = referenceData[referenceTab];
+      if (!rows) return;
+      downloadTextFile(REFERENCE_TABS[referenceTab].file.replace(/_[a-f0-9]+(?=\.txt$)/, ''), rows.map(row => referenceTab === 'ignored_chinese' ? row.chinese : `${row.chinese}=${row.vietnamese}`).join('\n'));
+      showToast('Đã xuất tệp từ điển');
+      return;
+    }
     let dictType: DictCategoryType = 'vietphrase';
     let filename = 'VietPhrase.txt';
 
@@ -352,7 +399,7 @@ export const DictionaryView: React.FC = () => {
         dictType = 'luatnhan';
         filename = 'LuatNhan.txt';
         break;
-      case 'pronouns_ignored':
+      case 'pronouns':
         dictType = 'pronouns';
         filename = 'Pronouns.txt';
         break;
@@ -375,28 +422,29 @@ export const DictionaryView: React.FC = () => {
       case 'names_custom': dictType = 'names'; break;
       case 'phienam': dictType = 'phienam'; break;
       case 'luatnhan': dictType = 'luatnhan'; break;
-      case 'pronouns_ignored': dictType = 'pronouns'; break;
+      case 'pronouns': dictType = 'pronouns'; break;
     }
 
     setIsProcessing(true);
     setProcessingStatus(`Đang đọc tệp ${file.name}...`);
+    let committedCount = 0;
     try {
       // Nếu tệp lớn > 5MB, sử dụng chunked importer
       if (file.size > 5 * 1024 * 1024) {
-        const entries = await parseDictionaryFileChunked(file, (count, pct) => {
+        await parseDictionaryFileChunked(file, (count, pct) => {
           setProcessingStatus(`Đã xử lý ${count.toLocaleString()} dòng (${pct}%)`);
           setProcessingPercent(pct);
+        }, async entries => {
+          committedCount += await importSingleTxt(dictType, entries.map(e => `${e.chinese}=${e.vietnamese}`).join('\n'));
         });
-        const content = entries.map(e => `${e.chinese}=${e.vietnamese}`).join('\n');
-        const count = await importSingleTxt(dictType, content);
-        showToast(`Đã nhập thành công ${count.toLocaleString()} mục vào ${dictType}!`);
+        showToast(`Đã nhập thành công ${committedCount.toLocaleString()} mục vào ${dictType}!`);
       } else {
         const content = await file.text();
         const count = await importSingleTxt(dictType, content);
         showToast(`Đã nhập thành công ${count.toLocaleString()} mục!`);
       }
     } catch (err: any) {
-      showToast('Lỗi khi nhập tệp: ' + (err.message || ''), true);
+      showToast(`Lỗi khi nhập tệp (đã lưu ${committedCount.toLocaleString()} mục): ` + (err.message || ''), true);
     } finally {
       setIsProcessing(false);
       setProcessingPercent(0);
@@ -406,6 +454,8 @@ export const DictionaryView: React.FC = () => {
 
   // Xóa trắng dữ liệu của bảng hiện tại
   const handleClearCurrentTab = async () => {
+    if (activeTab === 'vietphrase' && phraseStyle !== 'all' && phraseStyle !== 'unclassified') { showToast('Chuyển sang Tất cả nghĩa gốc để xóa từ; chế độ này chỉ sửa nghĩa riêng.', true); setDeleteConfirmModal(null); return; }
+
     let dictType: DictCategoryType = 'vietphrase';
     let label = 'Vietphrase';
 
@@ -414,7 +464,7 @@ export const DictionaryView: React.FC = () => {
       case 'names_main': dictType = 'names_main'; label = 'Names Chính'; break;
       case 'names_custom': dictType = 'names'; label = 'Names Phụ / Cá Nhân'; break;
       case 'luatnhan': dictType = 'luatnhan'; label = 'Luật Nhân'; break;
-      case 'pronouns_ignored': dictType = 'pronouns'; label = 'Đại Từ'; break;
+      case 'pronouns': dictType = 'pronouns'; label = 'Đại Từ'; break;
     }
 
     if (!window.confirm(`Bạn có chắc muốn xóa toàn bộ dữ liệu trong bảng ${label}?`)) return;
@@ -437,7 +487,10 @@ export const DictionaryView: React.FC = () => {
       addName(cn, vn, newCategory);
       showToast(`Đã thêm tên riêng: ${cn} = ${vn}`);
     } else if (activeTab === 'vietphrase') {
-      addVietphrase(cn, vn);
+      if (phraseStyle !== 'all' && phraseStyle !== 'unclassified') {
+        try { saveStylePhrase(phraseStyle, cn, vn); setStyleVersion(v => v + 1); }
+        catch { showToast('Không lưu được nghĩa văn phong.', true); return; }
+      } else addVietphrase(cn, vn);
       showToast(`Đã thêm Vietphrase: ${cn} = ${vn}`);
     } else {
       importSingleTxt(activeTab === 'names_main' ? 'names_main' : activeTab === 'luatnhan' ? 'luatnhan' : 'pronouns', `${cn}=${vn}`);
@@ -488,7 +541,11 @@ export const DictionaryView: React.FC = () => {
     if (activeTab === 'names_custom') {
       updatePhrase(originalChinese, cleanCn, cleanVn, 'name');
     } else if (activeTab === 'vietphrase') {
-      updatePhrase(originalChinese, cleanCn, cleanVn, 'vietphrase');
+      if (phraseStyle !== 'all' && phraseStyle !== 'unclassified') {
+        if (originalChinese !== cleanCn) { showToast('Giữ nguyên từ gốc khi sửa nghĩa theo văn phong.', true); return; }
+        try { saveStylePhrase(phraseStyle, cleanCn, cleanVn); setStyleVersion(v => v + 1); }
+        catch { showToast('Không lưu được nghĩa văn phong.', true); return; }
+      } else updatePhrase(originalChinese, cleanCn, cleanVn, 'vietphrase');
     } else {
       if (originalChinese !== cleanCn) {
         deletePhrase(originalChinese);
@@ -521,7 +578,9 @@ export const DictionaryView: React.FC = () => {
   };
 
   // Xác nhận thực hiện xóa sau khi người dùng bấm đồng ý trên Modal
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
+    if (activeTab === 'vietphrase' && phraseStyle !== 'all' && phraseStyle !== 'unclassified') { showToast('Chuyển sang Tất cả nghĩa gốc để xóa từ; chế độ này chỉ sửa nghĩa riêng.', true); setDeleteConfirmModal(null); return; }
+
     if (!deleteConfirmModal || deleteConfirmModal.items.length === 0) return;
     const items = deleteConfirmModal.items;
     const count = items.length;
@@ -530,8 +589,10 @@ export const DictionaryView: React.FC = () => {
       deleteMultiplePhrases(items, 'name');
     } else if (activeTab === 'vietphrase') {
       deleteMultiplePhrases(items, 'vietphrase');
-    } else if (activeTab === 'pronouns_ignored') {
-      deleteMultiplePhrases(items, 'ignored');
+    } else if (activeTab === 'pronouns') {
+      showToast('Thay đổi danh sách đại từ bằng cách nhập tệp Pronouns.txt.', true);
+      setDeleteConfirmModal(null);
+      return;
     } else {
       items.forEach(cn => deletePhrase(cn));
     }
@@ -551,10 +612,17 @@ export const DictionaryView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden select-none">
+      {activeTab === 'vietphrase' && <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2 text-xs">
+        <label className="text-muted">VietPhrase theo v?n phong <select aria-label="L?c VietPhrase theo v?n phong" value={phraseStyle} onChange={event => { setPhraseStyle(event.target.value as typeof phraseStyle); setCurrentPage(1); }} className="ml-2 rounded-lg border border-line bg-canvas px-2 py-1.5 text-main">
+          <option value="all">T?t c? ngh?a g?c</option><option value="unclassified">Ch?a ph?n lo?i</option>
+          {Object.entries(STYLE_LABELS).filter(([key]) => key !== 'auto' && key !== 'neutral').map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select></label>
+        <span className="text-muted">B? thu?t ng? m?u; m?c ch?a ph?n lo?i gi? ngh?a g?c.</span>
+      </div>}
       {/* Toast Notification */}
       {toastMsg && (
         <div className={`fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl text-xs font-medium shadow-xl flex items-center gap-2 animate-in fade-in duration-150 ${
-          toastMsg.isError ? 'bg-red-950 text-red-200 border border-red-700' : 'bg-neutral-900 text-neutral-100 border border-neutral-700'
+          toastMsg.isError ? 'bg-red-950 text-red-200 border border-red-700' : 'bg-surface text-main border border-line'
         }`}>
           {toastMsg.isError ? <X size={14} className="text-red-400" /> : <Check size={14} className="text-emerald-400" />}
           <span>{toastMsg.text}</span>
@@ -564,12 +632,12 @@ export const DictionaryView: React.FC = () => {
       {/* Processing Loader Overlay */}
       {isProcessing && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex flex-col items-center justify-center gap-3">
-          <Loader2 size={36} className="text-cyan-400 animate-spin" />
-          <p className="text-sm font-semibold text-white tracking-wide">{processingStatus}</p>
+          <Loader2 size={36} className="text-accent animate-spin" />
+          <p className="text-sm font-semibold text-main tracking-wide">{processingStatus}</p>
           {processingPercent > 0 && (
-            <div className="w-64 h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+            <div className="w-64 h-1.5 bg-raised rounded-full overflow-hidden">
               <div 
-                className="h-full bg-cyan-500 transition-all duration-200" 
+                className="h-full bg-accent transition-all duration-200" 
                 style={{ width: `${processingPercent}%` }} 
               />
             </div>
@@ -595,22 +663,16 @@ export const DictionaryView: React.FC = () => {
 
       {/* HEADER: TIÊU ĐỀ & THANH THAO TÁC TOÀN CỤC (GLOBAL BATCH ACTIONS) */}
       <div className={`px-4 py-3.5 border-b shrink-0 flex flex-wrap items-center justify-between gap-3 ${
-        isLight ? 'bg-neutral-50/80 border-neutral-200 text-neutral-900' : isSepia ? 'bg-[#f4e6ca] border-[#dfcdb0] text-[#3d2e1e]' : 'bg-[#18191c] border-neutral-800 text-neutral-100'
+        isLight ? 'bg-canvas/80 border-line text-main' : isSepia ? 'bg-surface border-line text-main' : 'bg-surface border-line text-main'
       }`}>
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-cyan-600/20 text-cyan-400 flex items-center justify-center border border-cyan-500/30">
+          <div className="w-8 h-8 rounded-lg bg-accent/20 text-accent flex items-center justify-center border border-accent/30">
             <Database size={18} />
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-tight flex items-center gap-2">
               Cơ Sở Dữ Liệu & Từ Điển
-              <span className="text-[10px] font-mono font-normal px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 border border-neutral-700">
-                QuickTranslator Core
-              </span>
             </h1>
-            <p className="text-[11px] opacity-60">
-              Quản lý toàn bộ tệp từ điển, tên riêng nhân vật và luật nhân dịch thuật
-            </p>
           </div>
         </div>
 
@@ -618,17 +680,17 @@ export const DictionaryView: React.FC = () => {
         <div className="flex items-center gap-1.5 flex-wrap">
           <button
             onClick={handleLoadAllDefaults}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-sm cursor-pointer transition-all active:scale-95"
-            title="Nạp nhanh toàn bộ từ điển mẫu từ bộ tệp QuickTranslator TTV"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-main shadow-sm cursor-pointer transition-all active:scale-95"
+            title="Khôi phục bộ từ điển mặc định đi kèm Convert"
           >
             <Sparkles size={13} />
-            <span>Nạp Gốc QT</span>
+            <span>Nạp mặc định</span>
           </button>
 
           <button
             onClick={handleExportAllJson}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer transition-all ${
-              isLight ? 'bg-white border-neutral-300 hover:bg-neutral-100 text-neutral-800' : isSepia ? 'bg-[#fdf6e9] border-[#d8c4a5] hover:bg-[#ebd8b7] text-[#3d2e1e]' : 'bg-[#222327] border-neutral-700 hover:bg-neutral-700 text-neutral-200'
+              isLight ? 'bg-surface border-line hover:bg-raised text-main' : isSepia ? 'bg-surface border-line hover:bg-surface text-main' : 'bg-surface border-line hover:bg-hover text-main'
             }`}
             title="Xuất toàn bộ tất cả bảng từ điển ra tệp JSON sao lưu"
           >
@@ -639,7 +701,7 @@ export const DictionaryView: React.FC = () => {
           <button
             onClick={() => allJsonFileInputRef.current?.click()}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer transition-all ${
-              isLight ? 'bg-white border-neutral-300 hover:bg-neutral-100 text-neutral-800' : isSepia ? 'bg-[#fdf6e9] border-[#d8c4a5] hover:bg-[#ebd8b7] text-[#3d2e1e]' : 'bg-[#222327] border-neutral-700 hover:bg-neutral-700 text-neutral-200'
+              isLight ? 'bg-surface border-line hover:bg-raised text-main' : isSepia ? 'bg-surface border-line hover:bg-surface text-main' : 'bg-surface border-line hover:bg-hover text-main'
             }`}
             title="Nhập khôi phục toàn bộ từ tệp JSON sao lưu"
           >
@@ -651,15 +713,15 @@ export const DictionaryView: React.FC = () => {
 
       {/* SEGMENTED TAB BAR: 6 BẢNG DỮ LIỆU TỪ ĐIỂN */}
       <div className={`px-4 pt-2.5 border-b overflow-x-auto scrollbar-none shrink-0 ${
-        isLight ? 'bg-neutral-100/50 border-neutral-200' : isSepia ? 'bg-[#efe0c3] border-[#dfcdb0]' : 'bg-[#151619] border-neutral-800'
+        isLight ? 'bg-raised/50 border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line'
       }`}>
-        <div className="flex items-center gap-1 min-w-max pb-2">
+        <div className="flex flex-wrap items-center gap-1 pb-2">
           <button
             onClick={() => handleTabChange('vietphrase')}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'vietphrase'
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold'
-                : 'opacity-70 hover:opacity-100 hover:bg-neutral-800/40'
+                ? 'bg-accent text-main shadow-xs font-semibold'
+                : 'opacity-70 hover:opacity-100 hover:bg-raised/40'
             }`}
           >
             <span>Vietphrase</span>
@@ -670,11 +732,11 @@ export const DictionaryView: React.FC = () => {
             onClick={() => handleTabChange('names_main')}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'names_main'
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold'
-                : 'opacity-70 hover:opacity-100 hover:bg-neutral-800/40'
+                ? 'bg-accent text-main shadow-xs font-semibold'
+                : 'opacity-70 hover:opacity-100 hover:bg-raised/40'
             }`}
           >
-            <span>Names Chính</span>
+            <span>Name</span>
             <span className="text-[10px] opacity-80 font-mono">({fullNamesMain.length.toLocaleString()})</span>
           </button>
 
@@ -682,12 +744,12 @@ export const DictionaryView: React.FC = () => {
             onClick={() => handleTabChange('names_custom')}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'names_custom'
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold'
-                : 'opacity-70 hover:opacity-100 hover:bg-neutral-800/40'
+                ? 'bg-accent text-main shadow-xs font-semibold'
+                : 'opacity-70 hover:opacity-100 hover:bg-raised/40'
             }`}
           >
             <span className="flex items-center gap-1">
-              <span>Names Phụ / Cá Nhân</span>
+              <span>Name phụ</span>
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
             </span>
             <span className="text-[10px] opacity-80 font-mono">({namesList.length.toLocaleString()})</span>
@@ -697,8 +759,8 @@ export const DictionaryView: React.FC = () => {
             onClick={() => handleTabChange('phienam')}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'phienam'
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold'
-                : 'opacity-70 hover:opacity-100 hover:bg-neutral-800/40'
+                ? 'bg-accent text-main shadow-xs font-semibold'
+                : 'opacity-70 hover:opacity-100 hover:bg-raised/40'
             }`}
           >
             <span>Phiên Âm Hán Việt</span>
@@ -709,8 +771,8 @@ export const DictionaryView: React.FC = () => {
             onClick={() => handleTabChange('luatnhan')}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'luatnhan'
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold'
-                : 'opacity-70 hover:opacity-100 hover:bg-neutral-800/40'
+                ? 'bg-accent text-main shadow-xs font-semibold'
+                : 'opacity-70 hover:opacity-100 hover:bg-raised/40'
             }`}
           >
             <span>Luật Nhân</span>
@@ -718,22 +780,29 @@ export const DictionaryView: React.FC = () => {
           </button>
 
           <button
-            onClick={() => handleTabChange('pronouns_ignored')}
+            onClick={() => handleTabChange('pronouns')}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-              activeTab === 'pronouns_ignored'
-                ? 'bg-cyan-600 text-white shadow-xs font-semibold'
-                : 'opacity-70 hover:opacity-100 hover:bg-neutral-800/40'
+              activeTab === 'pronouns'
+                ? 'bg-accent text-main shadow-xs font-semibold'
+                : 'opacity-70 hover:opacity-100 hover:bg-raised/40'
             }`}
           >
-            <span>Đại Từ & Bỏ Qua</span>
-            <span className="text-[10px] opacity-80 font-mono">({fullPronouns.length + fullIgnored.length})</span>
+            <span>Đại từ</span>
+            <span className="text-[10px] opacity-80 font-mono">({fullPronouns.length})</span>
           </button>
+          {(Object.entries(REFERENCE_TABS) as [ReferenceTab, typeof REFERENCE_TABS[ReferenceTab]][]).map(([tab, config]) => (
+            <button key={tab} onClick={() => handleTabChange(tab)} aria-pressed={activeTab === tab}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1.5 cursor-pointer ${activeTab === tab ? 'bg-accent text-main font-semibold' : 'opacity-70 hover:opacity-100 hover:bg-raised/40'}`}>
+              <span>{config.label}</span>
+              <span className="text-[10px] font-mono">({referenceData[tab]?.length.toLocaleString() ?? '…'})</span>
+            </button>
+          ))}
         </div>
       </div>
 
       {/* PER-TAB ACTION TOOLBAR: TÌM KIẾM, IMPORT/EXPORT FILE TXT VÀ THÊM MỚI */}
       <div className={`px-4 py-2.5 border-b shrink-0 flex flex-wrap items-center justify-between gap-2 text-xs ${
-        isLight ? 'bg-white border-neutral-200' : isSepia ? 'bg-[#fbf0d9] border-[#dfcdb0]' : 'bg-[#18191c] border-neutral-800'
+        isLight ? 'bg-surface border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line'
       }`}>
         <div className="flex items-center gap-2 flex-1 min-w-[200px]">
           {/* Ô tìm kiếm */}
@@ -745,7 +814,7 @@ export const DictionaryView: React.FC = () => {
               onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
               placeholder={`Tìm trong ${activeTab === 'vietphrase' ? 'Vietphrase' : activeTab === 'names_main' ? 'Names chính' : activeTab === 'names_custom' ? 'Names cá nhân' : 'bảng hiện tại'}...`}
               className={`w-full pl-8 pr-3 py-1.5 rounded-lg border text-xs outline-none transition-colors ${
-                isLight ? 'bg-neutral-100 border-neutral-300 focus:border-cyan-600' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0] focus:border-cyan-600 text-[#3d2e1e]' : 'bg-[#222327] border-neutral-700 focus:border-cyan-500 text-neutral-100'
+                isLight ? 'bg-raised border-line focus:border-accent' : isSepia ? 'bg-surface border-line focus:border-accent text-main' : 'bg-surface border-line focus:border-accent text-main'
               }`}
             />
             {searchTerm && (
@@ -764,7 +833,7 @@ export const DictionaryView: React.FC = () => {
               value={selectedCategory}
               onChange={(e) => { setSelectedCategory(e.target.value); setCurrentPage(1); }}
               className={`px-2 py-1.5 rounded-lg border text-xs outline-none cursor-pointer ${
-                isLight ? 'bg-neutral-100 border-neutral-300' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0] text-[#3d2e1e]' : 'bg-[#222327] border-neutral-700 text-neutral-200'
+                isLight ? 'bg-raised border-line' : isSepia ? 'bg-surface border-line text-main' : 'bg-surface border-line text-main'
               }`}
             >
               <option value="all">Tất cả loại</option>
@@ -781,9 +850,9 @@ export const DictionaryView: React.FC = () => {
         {/* Nút hành động riêng cho tệp hiện tại */}
         <div className="flex items-center gap-1.5">
           <button
-            onClick={() => singleFileInputRef.current?.click()}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border cursor-pointer hover:border-cyan-500/50 transition-colors ${
-              isLight ? 'bg-neutral-50 border-neutral-300 text-neutral-800' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0] text-[#3d2e1e]' : 'bg-[#222327] border-neutral-700 text-neutral-200'
+            disabled={isReadOnly} onClick={() => singleFileInputRef.current?.click()}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border cursor-pointer hover:border-accent/50 transition-colors ${
+              isLight ? 'bg-canvas border-line text-main' : isSepia ? 'bg-surface border-line text-main' : 'bg-surface border-line text-main'
             }`}
             title="Nhập tệp .txt riêng cho bảng này"
           >
@@ -793,8 +862,8 @@ export const DictionaryView: React.FC = () => {
 
           <button
             onClick={handleExportCurrentTab}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border cursor-pointer hover:border-cyan-500/50 transition-colors ${
-              isLight ? 'bg-neutral-50 border-neutral-300 text-neutral-800' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0] text-[#3d2e1e]' : 'bg-[#222327] border-neutral-700 text-neutral-200'
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border cursor-pointer hover:border-accent/50 transition-colors ${
+              isLight ? 'bg-canvas border-line text-main' : isSepia ? 'bg-surface border-line text-main' : 'bg-surface border-line text-main'
             }`}
             title="Xuất tệp .txt chuẩn QuickTranslator cho bảng này"
           >
@@ -803,17 +872,17 @@ export const DictionaryView: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium cursor-pointer shadow-xs transition-colors"
+            disabled={isReadOnly} onClick={() => setIsAddModalOpen(true)}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-accent hover:bg-accent text-main font-medium cursor-pointer shadow-xs transition-colors"
           >
             <Plus size={13} />
             <span>Thêm Mục</span>
           </button>
 
-          {activeTab !== 'phienam' && (
+          {!isReadOnly && (
             <button
               onClick={handleClearCurrentTab}
-              className="p-1.5 rounded-lg text-neutral-400 hover:text-red-400 hover:bg-red-950/30 transition-colors cursor-pointer"
+              className="p-1.5 rounded-lg text-muted hover:text-red-400 hover:bg-red-950/30 transition-colors cursor-pointer"
               title="Xóa trắng bảng này"
             >
               <Trash2 size={13} />
@@ -822,24 +891,25 @@ export const DictionaryView: React.FC = () => {
         </div>
       </div>
 
+      {referenceTab && <p className="px-4 py-2 text-xs text-muted">Tệp tham khảo gốc • Chỉ đọc, tìm kiếm và xuất .txt.</p>}
       {/* BULK ACTION BAR KHI ĐANG CHỌN NHIỀU TỪ */}
       {selectedKeys.size > 0 && (
-        <div className="px-4 py-2 bg-cyan-950/90 border-b border-cyan-800/80 text-cyan-200 text-xs flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-1 duration-150">
+        <div className="px-4 py-2 bg-accent-soft/90 border-b border-accent/80 text-accent text-xs flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-1 duration-150">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-white">Đã chọn {selectedKeys.size} từ</span>
+            <span className="font-semibold text-main">Đã chọn {selectedKeys.size} từ</span>
             <span className="text-[11px] opacity-75">trong bảng {activeTab}</span>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={() => setSelectedKeys(new Set())}
-              className="px-2.5 py-1 rounded-md bg-cyan-900/60 hover:bg-cyan-900 text-cyan-200 text-xs cursor-pointer transition-colors"
+              className="px-2.5 py-1 rounded-md bg-accent-soft/60 hover:bg-accent-soft text-accent text-xs cursor-pointer transition-colors"
             >
               Bỏ chọn tất cả
             </button>
             <button
               onClick={handleRequestBulkDelete}
-              className="px-3 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+              className="px-3 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-main font-semibold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
             >
               <Trash2 size={13} />
               <span>Xóa {selectedKeys.size} từ đã chọn</span>
@@ -853,19 +923,19 @@ export const DictionaryView: React.FC = () => {
         {paginatedData.length === 0 ? (
           <div className="h-48 flex flex-col items-center justify-center gap-2 opacity-50 text-xs">
             <Archive size={28} />
-            <p>Không tìm thấy mục nào phù hợp</p>
+            <p>{referenceTab && !referenceData[referenceTab] ? referenceError || 'Đang tải từ điển…' : 'Không tìm thấy mục nào phù hợp'}</p>
           </div>
         ) : (
           <div className="text-xs font-mono">
             {/* Table Header: Cột Chọn tất cả, Từ tiếng Trung, Nghĩa tiếng Việt, Thao tác */}
             <div className={`flex items-center gap-2.5 py-1.5 px-2 border-b text-[11px] font-semibold opacity-70 ${
-              isLight ? 'border-neutral-200 text-neutral-700' : isSepia ? 'border-[#dfcdb0] text-[#3d2e1e]' : 'border-neutral-800 text-neutral-400'
+              isLight ? 'border-line text-main' : isSepia ? 'border-line text-main' : 'border-line text-muted'
             }`}>
               <input 
                 type="checkbox"
                 checked={paginatedData.length > 0 && paginatedData.every(i => selectedKeys.has(i.chinese))}
                 onChange={() => handleToggleSelectAll(paginatedData)}
-                className="rounded border-neutral-700 bg-neutral-800 text-cyan-500 w-3.5 h-3.5 cursor-pointer shrink-0"
+                className="rounded border-line bg-raised text-accent w-3.5 h-3.5 cursor-pointer shrink-0"
                 title="Chọn hoặc bỏ chọn tất cả trên trang này"
               />
               <span className="w-1/3 min-w-[120px]">Từ Gốc Tiếng Trung (Bên trái)</span>
@@ -883,8 +953,8 @@ export const DictionaryView: React.FC = () => {
                     key={`${item.chinese}-${idx}`}
                     className={`py-2 px-2 flex items-center justify-between gap-3 transition-colors rounded-lg group ${
                       isChecked 
-                        ? 'bg-cyan-950/30' 
-                        : isLight ? 'hover:bg-neutral-100' : isSepia ? 'hover:bg-[#ebd8b7]/40' : 'hover:bg-neutral-800/30'
+                        ? 'bg-accent-soft/30' 
+                        : isLight ? 'hover:bg-raised' : isSepia ? 'hover:bg-surface/40' : 'hover:bg-raised/30'
                     }`}
                   >
                     {/* Checkbox chọn dòng */}
@@ -892,7 +962,7 @@ export const DictionaryView: React.FC = () => {
                       type="checkbox"
                       checked={isChecked}
                       onChange={() => toggleSelectKey(item.chinese)}
-                      className="rounded border-neutral-700 bg-neutral-800 text-cyan-500 w-3.5 h-3.5 cursor-pointer shrink-0"
+                      className="rounded border-line bg-raised text-accent w-3.5 h-3.5 cursor-pointer shrink-0"
                     />
 
                     {/* Cột Từ Gốc Tiếng Trung (Bên trái) - Có thể sửa khi bấm nút Sửa */}
@@ -902,12 +972,12 @@ export const DictionaryView: React.FC = () => {
                           type="text"
                           value={editingItem.editChinese}
                           onChange={(e) => setEditingItem({ ...editingItem, editChinese: e.target.value })}
-                          className="w-full px-2 py-1 rounded bg-[#2a2b30] border border-cyan-500 text-xs text-cyan-300 font-serif outline-none"
+                          className="w-full px-2 py-1 rounded bg-surface border border-accent text-xs text-accent font-serif outline-none"
                           placeholder="Từ tiếng Trung"
                         />
                       ) : (
                         <>
-                          <span className="text-cyan-400 font-semibold">{item.chinese}</span>
+                          <span className="text-accent font-semibold">{item.chinese}</span>
                           {(item as any).isCustom && (
                             <span className="text-[10px] text-amber-400 font-normal px-1 py-0.2 rounded bg-amber-950/50 border border-amber-800/40">
                               Cá nhân
@@ -931,28 +1001,28 @@ export const DictionaryView: React.FC = () => {
                             value={editingItem.editViet}
                             onChange={(e) => setEditingItem({ ...editingItem, editViet: e.target.value })}
                             onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit()}
-                            className="flex-1 px-2 py-1 rounded bg-[#2a2b30] border border-cyan-500 text-xs text-white outline-none"
+                            className="flex-1 px-2 py-1 rounded bg-surface border border-accent text-xs text-main outline-none"
                             placeholder="Nghĩa tiếng Việt"
                             autoFocus
                           />
                           <button
                             onClick={handleSaveEdit}
-                            className="p-1 rounded bg-cyan-600 text-white hover:bg-cyan-500 cursor-pointer"
+                            className="p-1 rounded bg-accent text-main hover:bg-accent cursor-pointer"
                             title="Lưu thay đổi cả tiếng Trung và tiếng Việt"
                           >
                             <Check size={12} />
                           </button>
                           <button
                             onClick={() => setEditingItem(null)}
-                            className="p-1 rounded bg-neutral-700 text-neutral-300 hover:bg-neutral-600 cursor-pointer"
+                            className="p-1 rounded bg-hover text-main hover:bg-hover cursor-pointer"
                             title="Hủy"
                           >
                             <X size={12} />
                           </button>
                         </div>
                       ) : (
-                        <span className={isLight ? 'text-neutral-800' : isSepia ? 'text-[#3d2e1e]' : 'text-neutral-200'}>
-                          {item.vietnamese || <span className="opacity-40 italic">(Lược bỏ / rỗng)</span>}
+                        <span className={isLight ? 'text-main' : isSepia ? 'text-main' : 'text-main'}>
+                          {(activeTab === 'vietphrase' && selectedStylePhrases[item.chinese] ? selectedStylePhrases[item.chinese] : item.vietnamese) || <span className="opacity-40 italic">(Lược bỏ / rỗng)</span>}
                         </span>
                       )}
                     </div>
@@ -965,21 +1035,21 @@ export const DictionaryView: React.FC = () => {
                             setEditingItem({
                               originalChinese: item.chinese,
                               editChinese: item.chinese,
-                              editViet: item.vietnamese,
+                              editViet: activeTab === 'vietphrase' ? selectedStylePhrases[item.chinese] ?? item.vietnamese : item.vietnamese,
                               id: (item as any).id
                             });
                           }}
-                          className="p-1 text-neutral-400 hover:text-cyan-300 hover:bg-neutral-800 rounded cursor-pointer"
+                          className="p-1 text-muted hover:text-accent hover:bg-raised rounded cursor-pointer"
                           title="Sửa từ tiếng Trung bên trái và nghĩa tiếng Việt"
                         >
                           <Edit2 size={13} />
                         </button>
                       )}
 
-                      {activeTab !== 'phienam' && (
+                      {!isReadOnly && (
                         <button
                           onClick={() => handleRequestDeleteItem(item.chinese)}
-                          className="p-1 text-neutral-400 hover:text-red-400 hover:bg-neutral-800 rounded cursor-pointer"
+                          className="p-1 text-muted hover:text-red-400 hover:bg-raised rounded cursor-pointer"
                           title="Xóa mục này (kèm xác nhận)"
                         >
                           <Trash2 size={13} />
@@ -996,7 +1066,7 @@ export const DictionaryView: React.FC = () => {
 
       {/* FOOTER: PHÂN TRANG VÀ THỐNG KÊ */}
       <div className={`px-4 py-2.5 border-t shrink-0 flex items-center justify-between text-xs font-mono opacity-80 ${
-        isLight ? 'bg-neutral-50 border-neutral-200' : isSepia ? 'bg-[#efe0c3] border-[#dfcdb0]' : 'bg-[#18191c] border-neutral-800'
+        isLight ? 'bg-canvas border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line'
       }`}>
         <div>
           Tổng: <span className="font-bold">{totalItems.toLocaleString()}</span> mục 
@@ -1008,14 +1078,14 @@ export const DictionaryView: React.FC = () => {
           <button
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             disabled={safeCurrentPage <= 1}
-            className="p-1 rounded border border-neutral-700 disabled:opacity-30 hover:bg-neutral-800 cursor-pointer disabled:cursor-not-allowed"
+            className="p-1 rounded border border-line disabled:opacity-30 hover:bg-raised cursor-pointer disabled:cursor-not-allowed"
           >
             <ChevronLeft size={13} />
           </button>
           <button
             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             disabled={safeCurrentPage >= totalPages}
-            className="p-1 rounded border border-neutral-700 disabled:opacity-30 hover:bg-neutral-800 cursor-pointer disabled:cursor-not-allowed"
+            className="p-1 rounded border border-line disabled:opacity-30 hover:bg-raised cursor-pointer disabled:cursor-not-allowed"
           >
             <ChevronRight size={13} />
           </button>
@@ -1026,16 +1096,16 @@ export const DictionaryView: React.FC = () => {
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
           <div className={`w-full max-w-md p-5 rounded-2xl shadow-2xl border text-sm space-y-4 animate-in zoom-in-95 duration-150 ${
-            isLight ? 'bg-white border-neutral-200 text-neutral-900' : isSepia ? 'bg-[#fbf0d9] border-[#dfcdb0] text-[#3d2e1e]' : 'bg-[#1e1f23] border-neutral-800 text-neutral-100'
+            isLight ? 'bg-surface border-line text-main' : isSepia ? 'bg-surface border-line text-main' : 'bg-surface border-line text-main'
           }`}>
-            <div className="flex items-center justify-between border-b pb-3 border-neutral-800">
+            <div className="flex items-center justify-between border-b pb-3 border-line">
               <h3 className="font-bold text-base flex items-center gap-2">
-                <Plus size={16} className="text-cyan-400" />
+                <Plus size={16} className="text-accent" />
                 Thêm Mục Mới Vào {activeTab === 'vietphrase' ? 'Vietphrase' : activeTab === 'names_custom' ? 'Names Cá Nhân' : activeTab === 'luatnhan' ? 'Luật Nhân' : 'Từ Điển'}
               </h3>
               <button 
                 onClick={() => setIsAddModalOpen(false)} 
-                className="p-1 text-neutral-400 hover:text-white rounded cursor-pointer"
+                className="p-1 text-muted hover:text-main rounded cursor-pointer"
               >
                 <X size={16} />
               </button>
@@ -1050,7 +1120,7 @@ export const DictionaryView: React.FC = () => {
                   onChange={(e) => setNewKey(e.target.value)}
                   placeholder={activeTab === 'luatnhan' ? 'Ví dụ: 在{0}的面前' : 'Ví dụ: 萧炎 hoặc 了'}
                   className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${
-                    isLight ? 'bg-neutral-100 border-neutral-300' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0]' : 'bg-[#121316] border-neutral-700 text-white'
+                    isLight ? 'bg-raised border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line text-main'
                   }`}
                   autoFocus
                 />
@@ -1064,7 +1134,7 @@ export const DictionaryView: React.FC = () => {
                   onChange={(e) => setNewVal(e.target.value)}
                   placeholder={activeTab === 'luatnhan' ? 'Ví dụ: trước mặt {0}' : 'Ví dụ: Tiêu Viêm hoặc /liễu/rồi'}
                   className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${
-                    isLight ? 'bg-neutral-100 border-neutral-300' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0]' : 'bg-[#121316] border-neutral-700 text-white'
+                    isLight ? 'bg-raised border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line text-main'
                   }`}
                 />
                 <p className="text-[11px] opacity-50 mt-1">
@@ -1079,7 +1149,7 @@ export const DictionaryView: React.FC = () => {
                     value={newCategory}
                     onChange={(e) => setNewCategory(e.target.value as any)}
                     className={`w-full px-3 py-2 rounded-lg border text-sm outline-none cursor-pointer ${
-                      isLight ? 'bg-neutral-100 border-neutral-300' : isSepia ? 'bg-[#f0e2c8] border-[#dfcdb0]' : 'bg-[#121316] border-neutral-700 text-white'
+                      isLight ? 'bg-raised border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line text-main'
                     }`}
                   >
                     <option value="Nhân vật">Nhân vật</option>
@@ -1093,16 +1163,16 @@ export const DictionaryView: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
               <button
                 onClick={() => setIsAddModalOpen(false)}
-                className="px-3.5 py-1.5 rounded-lg border border-neutral-700 hover:bg-neutral-800 text-xs font-medium cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg border border-line hover:bg-raised text-xs font-medium cursor-pointer"
               >
                 Hủy bỏ
               </button>
               <button
                 onClick={handleAddNewEntry}
-                className="px-4 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold cursor-pointer shadow-sm"
+                className="px-4 py-1.5 rounded-lg bg-accent hover:bg-accent text-main text-xs font-semibold cursor-pointer shadow-sm"
               >
                 Lưu vào Từ Điển
               </button>
@@ -1114,23 +1184,23 @@ export const DictionaryView: React.FC = () => {
       {/* MODAL XÁC NHẬN XÓA TỪ ĐIỂN TÙY BIẾN KÈM SỐ LƯỢNG */}
       {deleteConfirmModal && deleteConfirmModal.isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="w-full max-w-sm rounded-2xl bg-neutral-900 border border-neutral-800 p-5 text-neutral-100 shadow-2xl space-y-4">
+          <div className="w-full max-w-sm rounded-2xl bg-surface border border-line p-5 text-main shadow-2xl space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-800/60 text-rose-400 flex items-center justify-center shrink-0">
                 <Trash2 size={20} />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-neutral-100">Xác Nhận Xóa Từ Điển</h3>
-                <p className="text-xs text-neutral-400 mt-0.5">
+                <h3 className="font-bold text-sm text-main">Xác Nhận Xóa Từ Điển</h3>
+                <p className="text-xs text-muted mt-0.5">
                   {deleteConfirmModal.count > 1 ? `Xóa ${deleteConfirmModal.count} từ đã chọn` : 'Xóa 1 từ khỏi từ điển'}
                 </p>
               </div>
             </div>
 
-            <div className="text-xs text-neutral-300 leading-relaxed bg-neutral-950/80 p-3 rounded-xl border border-neutral-800">
+            <div className="text-xs text-main leading-relaxed bg-canvas/80 p-3 rounded-xl border border-line">
               {deleteConfirmModal.count === 1 ? (
                 <p>
-                  Bạn có chắc chắn muốn xóa từ <strong className="text-cyan-400 font-bold">"{deleteConfirmModal.sampleTitle}"</strong> khỏi từ điển không?
+                  Bạn có chắc chắn muốn xóa từ <strong className="text-accent font-bold">"{deleteConfirmModal.sampleTitle}"</strong> khỏi từ điển không?
                 </p>
               ) : (
                 <p>
@@ -1139,16 +1209,16 @@ export const DictionaryView: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
               <button
                 onClick={() => setDeleteConfirmModal(null)}
-                className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl text-xs font-medium transition-colors cursor-pointer"
+                className="px-4 py-2 bg-raised hover:bg-hover text-main rounded-xl text-xs font-medium transition-colors cursor-pointer"
               >
                 Hủy bỏ
               </button>
               <button
                 onClick={handleConfirmDelete}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-main rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
               >
                 <Trash2 size={13} />
                 <span>Xác nhận xóa {deleteConfirmModal.count > 1 ? `(${deleteConfirmModal.count})` : ''}</span>

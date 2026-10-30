@@ -1,0 +1,55 @@
+{
+  "version": "2026-10-30-current",
+  "capturedAt": "2026-10-30T10:08:10.398Z",
+  "stores": [
+    {
+      "store": "names_store",
+      "file": "names_store.json.gz",
+      "count": 2344,
+      "bytes": 98021,
+      "sha256": "714a865a421fd2ae2d0d0f8be9bd7e0665992be8247c78e77ac8f9e4f1720cc0"
+    },
+    {
+      "store": "names_main_store",
+      "file": "names_main_store.json.gz",
+      "count": 136889,
+      "bytes": 1261451,
+      "sha256": "b6c914f72406896ad7505bc022c7b2553efff507caded4e49de871d6028b05f4"
+    },
+    {
+      "store": "vietphrase_store",
+      "file": "vietphrase_store.json.gz",
+      "count": 966608,
+      "bytes": 10236400,
+      "sha256": "fd1746c329137cd886631de0f3e8b0c6d39e8cbf6c98f6e643fd4786829f1937"
+    },
+    {
+      "store": "luat_nhan_store",
+      "file": "luat_nhan_store.json.gz",
+      "count": 222,
+      "bytes": 3214,
+      "sha256": "f13d686f2d0f7618685a6b30295b76aa26b501456326bc4cd2c0efc11aca4cf2"
+    },
+    {
+      "store": "pronouns_store",
+      "file": "pronouns_store.json.gz",
+      "count": 27,
+      "bytes": 585,
+      "sha256": "12fe1a740e0499677f0b62cb38edf9151d8ccb86f294dcffe3538b6cce9aa801"
+    },
+    {
+      "store": "ignored_phrases_store",
+      "file": "ignored_phrases_store.json.gz",
+      "count": 187,
+      "bytes": 5855,
+      "sha256": "be38567abd706450a3f5583026d953bcafd4781eb3b46c9b7f96305b419d6edd"
+    },
+    {
+      "store": "phien_am_store",
+      "file": "phien_am_store.json.gz",
+      "count": 12571,
+      "bytes": 72211,
+      "sha256": "fc80039f964721d040e17e5a4ba29ef86364de18d69ba22fa9f31b67f28b4189"
+    }
+  ]
+}

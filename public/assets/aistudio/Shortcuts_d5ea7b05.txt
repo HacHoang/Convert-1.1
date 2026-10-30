@@ -2,4 +2,3 @@
 nt=ngoctay
 tn=Truyền Ưng
 vn=Việt Nam
-ttv=Tàng Thư Viện

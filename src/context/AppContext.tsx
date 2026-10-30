@@ -1,45 +1,45 @@
+import { readReaderState, clearStagedReadingPositions } from '../utils/readerState';
+import { mergeLibraryChapters, type ChapterSaveOptions } from '../utils/libraryChapterMerge';
+import { initializeDefaultDictionaries, restoreDefaultDictionaries } from '../utils/defaultDictionaries';
+import { readConvertPreference, removeLegacyAccount } from '../utils/legacyCompatibility';
+import { parseBackup, backupStores, type BackupData, type LibraryData } from '../utils/appBackup';
+import type { TranslationStyle } from '../utils/translationStyle';
 /**
  * Context quản lý toàn bộ dữ liệu offline của Convert
  * 100% Offline, không yêu cầu đăng nhập.
  * Hỗ trợ IndexedDB cho toàn bộ các bảng từ điển QuickTranslator (~40MB+)
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { authRequest } from '../utils/googleAuth';
 import { NameItem, INITIAL_NAMES } from '../data/defaultNames';
 import { DEFAULT_VIETPHRASE } from '../data/vietphraseData';
 import { SAMPLE_CHAPTERS } from '../data/sampleNovels';
 import { 
-  getStoredNames, 
   saveNameItem, 
   deleteNameItem, 
   deleteNameByChinese,
   saveNamesBatch, 
   clearNamesStore,
-  getStoredVietphrase, 
   saveVietphraseItem, 
   deleteVietphraseItem, 
   saveVietphraseBatch, 
   clearVietphraseStore,
-  getStoredNamesMain,
   saveNamesMainBatch,
   clearNamesMainStore,
-  getStoredLuatNhan,
   saveLuatNhanBatch,
   clearLuatNhanStore,
-  getStoredPronouns,
   savePronounsBatch,
   clearPronounsStore,
-  getStoredIgnoredPhrases,
   saveIgnoredPhrasesBatch,
   clearIgnoredPhrasesStore,
-  exportAllDatabases,
-  importAllDatabases
+  readStore, readAppValue, writeAppValue, replaceStores, deleteIgnoredPhrases,
+  STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRASE, STORE_LUAT_NHAN, STORE_PRONOUNS, STORE_IGNORED, STORE_PHIEN_AM, DICTIONARY_STORES
 } from '../utils/indexedDbStorage';
 import { 
   DEFAULT_LUAT_NHAN, 
   DEFAULT_PRONOUNS, 
   DEFAULT_IGNORED_PHRASES, 
-  DEFAULT_NAMES2, 
   CHINESE_PHIEN_AM_WORDS 
 } from '../data/quickTranslatorData';
 
@@ -59,6 +59,7 @@ export interface SavedChapter {
 }
 
 export interface NovelBook {
+  translationStyle?: import('../utils/translationStyle').TranslationStyleChoice;
   id: string;
   title: string;
   originalTitle?: string;
@@ -83,7 +84,7 @@ export const PRESET_COVERS = [
 ];
 
 export function parseChapterHeader(title: string): { prefix: string; name: string; full: string } {
-  if (!title) return { prefix: 'Chương 1', name: '', full: 'Chương 1' };
+  if (!title.trim()) return { prefix: '', name: '', full: '' };
   const trimmed = title.trim();
   
   const match = trimmed.match(/^(Chương\s*\d+|Hồi\s*\d+|Đệ\s*\d+\s*Chương|Tiết\s*\d+|Phần\s*\d+)(?:[\s:：\-–—\.]+)?(.*)$/i);
@@ -108,9 +109,10 @@ export function parseChapterHeader(title: string): { prefix: string; name: strin
 }
 
 export type AppTheme = 'light' | 'dark' | 'sepia' | 'system';
-export type AppTab = 'translate' | 'batch' | 'library' | 'dictionary' | 'settings';
+export type AppTab = 'translate' | 'batch' | 'web' | 'library' | 'dictionary' | 'settings';
 
 export interface AppSettings {
+  translationStyle?: TranslationStyle;
   theme: AppTheme;
   fontSize: number;
   lineHeight: number;
@@ -119,7 +121,6 @@ export interface AppSettings {
   prioritizeNames: boolean;
   capitalizeSentences: boolean;
   ttsRate: number;
-  ttsPitch: number;
   customTextColor?: string;
 }
 
@@ -130,6 +131,7 @@ export interface ReadingStats {
 
 export interface GoogleAccount {
   isLoggedIn: boolean;
+  id?: string;
   email: string;
   name: string;
   avatarUrl?: string;
@@ -154,8 +156,8 @@ interface AppContextType {
 
   // Google Account
   googleAccount: GoogleAccount;
-  loginWithGoogle: (email?: string, name?: string) => void;
-  logoutGoogle: () => void;
+  loginWithGoogle: (credential: string, csrf: string) => Promise<void>;
+  logoutGoogle: () => Promise<void>;
   
   // Names Phụ / Cá Nhân
   namesList: NameItem[];
@@ -174,7 +176,7 @@ interface AppContextType {
   deleteVietphrase: (chinese: string) => void;
   exportVietphraseTxt: () => string;
   importVietphraseTxt: (content: string) => number;
-  resetDictionaries: () => void;
+  resetDictionaries: () => Promise<void>;
 
   // Luật Nhân (LuatNhan)
   luatNhanMap: Record<string, string>;
@@ -205,19 +207,21 @@ interface AppContextType {
 
   // Novels / Quản lý bộ truyện
   novelsList: NovelBook[];
-  addNovel: (book: Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>) => string;
-  updateNovel: (id: string, updates: Partial<NovelBook>) => void;
-  deleteNovel: (id: string) => void;
-  toggleFavoriteNovel: (id: string) => void;
+  saveLibraryChapters: (book: string | Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>, chapters: Omit<SavedChapter, 'id' | 'savedAt'>[], options?: ChapterSaveOptions) => Promise<{ novelId: string; count: number; overwritten: number; skipped: number }>;
+  addNovel: (book: Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>) => Promise<string>;
+  updateNovel: (id: string, updates: Partial<NovelBook>) => Promise<void>;
+  deleteNovel: (id: string) => Promise<void>;
+  toggleFavoriteNovel: (id: string) => Promise<void>;
   
   // Library / Chương đã lưu
   savedChapters: SavedChapter[];
-  saveChapter: (chapter: Omit<SavedChapter, 'id' | 'savedAt'>) => string;
-  deleteSavedChapter: (id: string) => void;
+  saveChapter: (chapter: Omit<SavedChapter, 'id' | 'savedAt'>, options?: ChapterSaveOptions) => Promise<string>;
+  updateSavedChapter: (id: string, updates: Pick<SavedChapter, 'title' | 'originalText' | 'vietphraseText'>) => Promise<void>;
+  deleteSavedChapter: (id: string) => Promise<void>;
   
   // Settings
   settings: AppSettings;
-  updateSettings: (updates: Partial<AppSettings>) => void;
+  updateSettings: (updates: Partial<AppSettings>) => Promise<boolean>;
   
   // Quick Inspector Modal
   inspectModal: {
@@ -225,8 +229,10 @@ interface AppContextType {
     initialChinese: string;
     initialVietnamese: string;
     initialCategory: NameItem['category'];
+    target?: 'name' | 'vietphrase';
+    style?: TranslationStyle;
   };
-  openInspectModal: (chinese: string, vietnamese?: string, category?: NameItem['category']) => void;
+  openInspectModal: (chinese: string, vietnamese?: string, category?: NameItem['category'], target?: 'name' | 'vietphrase', style?: TranslationStyle) => void;
   closeInspectModal: () => void;
 
   // Active translation buffer
@@ -285,7 +291,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   prioritizeNames: true,
   capitalizeSentences: true,
   ttsRate: 1.0,
-  ttsPitch: 1.0,
   customTextColor: '',
 };
 
@@ -316,110 +321,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isImportingLargeFile, setIsImportingLargeFile] = useState(false);
   const [importProgress, setImportProgress] = useState<{ count: number; percent: number } | null>(null);
 
-  // Khởi động nạp từ IndexedDB khi mount
-  useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      try {
-        const storedNames = await getStoredNames();
-        if (isMounted) {
-          if (storedNames && storedNames.length > 0) {
-            setNamesList(storedNames);
-          } else {
-            saveNamesBatch(INITIAL_NAMES).catch(console.error);
-          }
-        }
-      } catch (err) {
-        console.error('Error loading names from IndexedDB', err);
-      }
-
-      try {
-        const storedVp = await getStoredVietphrase();
-        if (isMounted && storedVp && Object.keys(storedVp).length > 5000) {
-          setVietphraseMap(storedVp);
-        } else {
-          if (isMounted && storedVp && Object.keys(storedVp).length > 0) {
-            setVietphraseMap(storedVp);
-          }
-          // Tự động nạp bộ từ điển Vietphrase gốc 23.5MB vào IndexedDB trong nền
-          fetch('/assets/aistudio/Vietphrase_fc812333.txt')
-            .then(res => res.ok ? res.text() : fetch('/assets/aistudio/Vietphrase_cho_file_g_p_ef2c75e8.txt').then(r => r.text()))
-            .then(txt => {
-              const lines = txt.split(/\r?\n/);
-              const batch: Array<{ chinese: string; vietnamese: string }> = [];
-              const map: Record<string, string> = {};
-              for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const eqIdx = line.indexOf('=');
-                if (eqIdx > 0) {
-                  const cn = line.slice(0, eqIdx).trim();
-                  const vn = line.slice(eqIdx + 1).trim();
-                  if (cn && vn) {
-                    batch.push({ chinese: cn, vietnamese: vn });
-                    map[cn] = vn;
-                  }
-                }
-              }
-              if (isMounted && Object.keys(map).length > 0) {
-                setVietphraseMap(prev => ({ ...prev, ...map }));
-                saveVietphraseBatch(batch).catch(console.error);
-              }
-            })
-            .catch(console.warn);
-        }
-      } catch (err) {
-        console.error('Error loading vietphrase from IndexedDB', err);
-      }
-
-      try {
-        const storedMain = await getStoredNamesMain();
-        if (isMounted && storedMain && Object.keys(storedMain).length > 0) {
-          setNamesMainMap(storedMain);
-        }
-      } catch (err) {
-        console.error('Error loading namesMain from IndexedDB', err);
-      }
-
-      try {
-        const storedLn = await getStoredLuatNhan();
-        if (isMounted && storedLn && Object.keys(storedLn).length > 0) {
-          setLuatNhanMap(prev => ({ ...prev, ...storedLn }));
-        }
-      } catch (err) {
-        console.error('Error loading luatNhan from IndexedDB', err);
-      }
-
-      try {
-        const storedPro = await getStoredPronouns();
-        if (isMounted && storedPro && Object.keys(storedPro).length > 0) {
-          setPronounsMap(prev => ({ ...prev, ...storedPro }));
-        }
-      } catch (err) {
-        console.error('Error loading pronouns from IndexedDB', err);
-      }
-
-      try {
-        const storedIgnored = await getStoredIgnoredPhrases();
-        if (isMounted && storedIgnored && storedIgnored.length > 0) {
-          setIgnoredPhrasesList(storedIgnored);
-        }
-      } catch (err) {
-        console.error('Error loading ignored phrases from IndexedDB', err);
-      }
-    })();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
   // Load Novels
   const [novelsList, setNovelsList] = useState<NovelBook[]>(() => {
     try {
-      const stored = localStorage.getItem('ttv_novel_books');
+      const stored = readConvertPreference('convert_novel_books');
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch {
       // ignore
@@ -430,21 +338,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Load Saved Chapters
   const [savedChapters, setSavedChapters] = useState<SavedChapter[]>(() => {
     try {
-      const stored = localStorage.getItem('ttv_saved_chapters');
+      const stored = readConvertPreference('convert_saved_chapters');
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          const ids = new Set<string>();
+          return parsed.map((chapter: SavedChapter) => {
+            const id = ids.has(chapter.id) ? `chap-${crypto.randomUUID()}` : chapter.id;
+            ids.add(id);
+            return id === chapter.id ? chapter : { ...chapter, id };
+          });
+        }
       }
     } catch {
       // ignore
     }
-    return SAMPLE_CHAPTERS;
+    return SAMPLE_CHAPTERS.map(chapter => ({
+      id: chapter.id,
+      novelId: DEFAULT_NOVELS.find(novel => chapter.bookTitle.startsWith(novel.title))?.id,
+      novelTitle: chapter.bookTitle,
+      title: chapter.chapterTitle,
+      originalText: chapter.chineseContent,
+      vietphraseText: '',
+      savedAt: 0,
+    }));
   });
 
   // Load Settings
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
-      const stored = localStorage.getItem('ttv_reader_settings');
+      const stored = readConvertPreference('convert_reader_settings');
       if (stored) {
         return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
       }
@@ -457,7 +380,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Reading Stats
   const [readingStats, setReadingStats] = useState<ReadingStats>(() => {
     try {
-      const stored = localStorage.getItem('ttv_reading_stats');
+      const stored = readConvertPreference('convert_reading_stats');
       if (stored) {
         return JSON.parse(stored);
       }
@@ -471,15 +394,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   // Google Account
+  const authRevision = useRef(0);
   const [googleAccount, setGoogleAccount] = useState<GoogleAccount>(() => {
-    try {
-      const stored = localStorage.getItem('ttv_google_account');
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch {
-      // ignore
-    }
     return {
       isLoggedIn: false,
       email: '',
@@ -494,6 +410,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     initialChinese: string;
     initialVietnamese: string;
     initialCategory: NameItem['category'];
+    target?: 'name' | 'vietphrase';
+    style?: TranslationStyle;
   }>({
     isOpen: false,
     initialChinese: '',
@@ -507,47 +425,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeNovelTitle, setActiveNovelTitle] = useState('Đấu Phá Thương Khung');
   const [activeNovelId, setActiveNovelId] = useState('novel-1');
 
-  // Persistence effects
-  useEffect(() => {
-    localStorage.setItem('ttv_novel_books', JSON.stringify(novelsList));
-  }, [novelsList]);
+  const [storageReady, setStorageReady] = useState(false);
+  const [dictionaryLoadStatus, setDictionaryLoadStatus] = useState('');
+  const [storageError, setStorageError] = useState('');
+  const libraryRef = useRef<LibraryData>({ novelsList, savedChapters });
+  const settingsRef = useRef(settings);
+  const statsRef = useRef(readingStats);
+  const storageQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueue = <T,>(operation: () => Promise<T>): Promise<T> => {
+    const pending = storageQueue.current.then(operation);
+    storageQueue.current = pending.catch(() => {});
+    return pending;
+  };
+  const reportStorageError = (error: unknown) => {
+    console.error(error);
+    window.alert('Không lưu được dữ liệu. Có thể bộ nhớ trình duyệt đã đầy hoặc bị chặn. Hãy xuất EPUB hoặc sao lưu và thử lại.');
+  };
+  const commitLibrary = (change: (current: LibraryData) => LibraryData) => enqueue(async () => {
+    const next = change(libraryRef.current);
+    await writeAppValue('library', next);
+    libraryRef.current = next;
+    setNovelsList(next.novelsList);
+    setSavedChapters(next.savedChapters);
+  });
 
   useEffect(() => {
-    localStorage.setItem('ttv_saved_chapters', JSON.stringify(savedChapters));
-  }, [savedChapters]);
+    let active = true;
+    void enqueue(async () => {
+      let library = await readAppValue<LibraryData>('library');
+      if (!library) {
+        library = libraryRef.current;
+        await writeAppValue('library', library);
+      }
+      const storedSettings = await readAppValue<AppSettings>('settings') || settingsRef.current;
+      const stats = await readAppValue<ReadingStats>('readingStats') || statsRef.current;
+      await writeAppValue('settings', storedSettings);
+      await writeAppValue('readingStats', stats);
+      await initializeDefaultDictionaries((message, percent) => { if (active) setDictionaryLoadStatus(`${message} ${percent}%`); });
+      const stores = await Promise.all(DICTIONARY_STORES.map(name => readStore<any>(name)));
+      if (!active) return;
+      libraryRef.current = library;
+      settingsRef.current = storedSettings;
+      statsRef.current = stats;
+      setNovelsList(library.novelsList);
+      setSavedChapters(library.savedChapters);
+      setSettings(storedSettings);
+      setReadingStats(stats);
+      setNamesList(stores[0]);
+      const map = (rows: any[]) => Object.fromEntries(rows.map(row => [row.chinese, row.vietnamese]));
+      setNamesMainMap(map(stores[1]));
+      setVietphraseMap(map(stores[2]));
+      setLuatNhanMap({ ...DEFAULT_LUAT_NHAN, ...Object.fromEntries(stores[3].map(row => [row.pattern, row.translation])) });
+      setPronounsMap({ ...DEFAULT_PRONOUNS, ...map(stores[4]) });
+      setIgnoredPhrasesList(stores[5].map(row => row.phrase));
+      setStorageReady(true);
+      // Keep legacy copies as a recovery source; IndexedDB is authoritative after migration.
+    }).catch(error => { if (active) setStorageError(String(error)); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem('ttv_reader_settings', JSON.stringify(settings));
-  }, [settings]);
-
-  useEffect(() => {
-    localStorage.setItem('ttv_reading_stats', JSON.stringify(readingStats));
-  }, [readingStats]);
-
-  useEffect(() => {
-    localStorage.setItem('ttv_google_account', JSON.stringify(googleAccount));
-  }, [googleAccount]);
+    // Legacy mock accounts are never a source of authenticated identity.
+    try { removeLegacyAccount(); } catch {}
+    let active = true;
+    const revision = authRevision.current;
+    authRequest<GoogleAccount>('session').then(account => { if (active && authRevision.current === revision) setGoogleAccount(account); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   const updateSettings = (updates: Partial<AppSettings>) => {
-    setSettings(prev => ({ ...prev, ...updates }));
+    return enqueue(async () => {
+      const next = { ...settingsRef.current, ...updates };
+      await writeAppValue('settings', next);
+      settingsRef.current = next;
+      setSettings(next);
+      return true;
+    }).catch(error => { reportStorageError(error); return false; });
   };
 
   const resetReadingStats = () => {
-    setReadingStats({ totalReadBooks: 0, totalReadMinutes: 0 });
+    void enqueue(async () => {
+      const next = { totalReadBooks: 0, totalReadMinutes: 0 };
+      await writeAppValue('readingStats', next);
+      statsRef.current = next;
+      setReadingStats(next);
+    }).catch(reportStorageError);
   };
 
-  const loginWithGoogle = (email?: string, name?: string) => {
-    const userEmail = email || 'converter.pro@gmail.com';
-    const userName = name || 'Converter Pro';
-    setGoogleAccount({
-      isLoggedIn: true,
-      email: userEmail,
-      name: userName,
-      avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
-    });
+  const loginWithGoogle = async (credential: string, csrf: string) => {
+    const revision = ++authRevision.current;
+    const account = await authRequest<GoogleAccount>('google', { credential, csrf });
+    if (authRevision.current === revision) setGoogleAccount(account);
   };
 
-  const logoutGoogle = () => {
+  const logoutGoogle = async () => {
+    ++authRevision.current;
+    await authRequest('logout', {});
+    window.google?.accounts.id.disableAutoSelect();
     setGoogleAccount({
       isLoggedIn: false,
       email: '',
@@ -556,12 +530,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const openInspectModal = (chinese: string, vietnamese?: string, category?: NameItem['category']) => {
+  const openInspectModal = (chinese: string, vietnamese?: string, category?: NameItem['category'], target?: 'name' | 'vietphrase', style?: TranslationStyle) => {
     setInspectModal({
       isOpen: true,
       initialChinese: chinese,
       initialVietnamese: vietnamese || '',
       initialCategory: category || 'Nhân vật',
+      target: target || (category === 'Khác' ? 'vietphrase' : 'name'),
+      style,
     });
   };
 
@@ -725,7 +701,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return next;
       });
     } else if (type === 'ignored') {
-      setIgnoredPhrasesList(prev => prev.filter(p => !phraseSet.has(p)));
+      deleteIgnoredPhrases([...phraseSet]).then(() => setIgnoredPhrasesList(prev => prev.filter(p => !phraseSet.has(p)))).catch(reportStorageError);
     }
   };
 
@@ -739,7 +715,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       if (type === 'names') {
         const newNames: NameItem[] = entries.map((e, idx) => ({
-          id: `batch-${Date.now()}-${idx}`,
+          id: `batch-${crypto.randomUUID()}`,
           chinese: e.chinese,
           vietnamese: e.vietnamese,
           category: 'Nhân vật',
@@ -831,7 +807,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     switch (dictType) {
       case 'names': {
         const items: NameItem[] = keyValBatch.map((e, idx) => ({
-          id: `name-import-${Date.now()}-${idx}`,
+          id: `name-import-${crypto.randomUUID()}`,
           chinese: e.chinese,
           vietnamese: e.vietnamese,
           category: 'Nhân vật',
@@ -918,122 +894,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Nạp toàn bộ dữ liệu gốc từ bộ asset QuickTranslator
   const loadAllQuickTranslatorAssets = async (
-    onProgress?: (msg: string, percent: number) => void
+    onProgress?: (message: string, percent: number) => void,
   ): Promise<{ success: boolean; message: string }> => {
     try {
-      onProgress?.('Đang nạp Luật Nhân & Đại Từ...', 15);
-      const lnRecords = Object.entries(DEFAULT_LUAT_NHAN).map(([pattern, translation]) => ({ pattern, translation }));
-      await saveLuatNhanBatch(lnRecords);
-      setLuatNhanMap(DEFAULT_LUAT_NHAN);
-
-      const proRecords = Object.entries(DEFAULT_PRONOUNS).map(([chinese, vietnamese]) => ({ chinese, vietnamese }));
-      await savePronounsBatch(proRecords);
-      setPronounsMap(DEFAULT_PRONOUNS);
-
-      await saveIgnoredPhrasesBatch(DEFAULT_IGNORED_PHRASES);
-      setIgnoredPhrasesList(DEFAULT_IGNORED_PHRASES);
-
-      onProgress?.('Đang nạp Names Phụ (Names2)...', 35);
-      const names2Items: NameItem[] = Object.entries(DEFAULT_NAMES2).map(([chinese, vietnamese], idx) => ({
-        id: `name2-${idx}`,
-        chinese,
-        vietnamese,
-        category: 'Nhân vật',
-        note: 'Names phụ gốc QuickTranslator',
-        createdAt: Date.now(),
-      }));
-      await saveNamesBatch(names2Items);
-      setNamesList(names2Items);
-
-      onProgress?.('Đang đọc tệp Names chính (Names.txt ~136k từ)...', 60);
-      try {
-        const namesRes = await fetch('/assets/aistudio/Names_537be5ed.txt');
-        if (namesRes.ok) {
-          const namesTxt = await namesRes.text();
-          const lines = namesTxt.split(/\r?\n/);
-          const batch: Array<{ chinese: string; vietnamese: string }> = [];
-          for (const line of lines) {
-            const eqIdx = line.indexOf('=');
-            if (eqIdx > 0) {
-              const cn = line.slice(0, eqIdx).trim();
-              const vn = line.slice(eqIdx + 1).trim();
-              if (cn && vn) batch.push({ chinese: cn, vietnamese: vn });
-            }
-          }
-          await saveNamesMainBatch(batch);
-          const map: Record<string, string> = {};
-          for (const b of batch) map[b.chinese] = b.vietnamese;
-          setNamesMainMap(map);
-        }
-      } catch (err) {
-        console.warn('Could not load asset Names.txt', err);
-      }
-
-      onProgress?.('Đang đọc tệp Vietphrase gốc (Vietphrase.txt 23.5MB chứa trọn bộ thành ngữ 4 chữ)...', 75);
-      try {
-        let vpRes = await fetch('/assets/aistudio/Vietphrase_fc812333.txt');
-        if (!vpRes.ok) {
-          vpRes = await fetch('/assets/aistudio/Vietphrase_cho_file_g_p_ef2c75e8.txt');
-        }
-        if (vpRes.ok) {
-          const vpTxt = await vpRes.text();
-          const lines = vpTxt.split(/\r?\n/);
-          const batch: Array<{ chinese: string; vietnamese: string }> = [];
-          const mapUpdates: Record<string, string> = {};
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const eqIdx = line.indexOf('=');
-            if (eqIdx > 0) {
-              const cn = line.slice(0, eqIdx).trim();
-              const vn = line.slice(eqIdx + 1).trim();
-              if (cn && vn) {
-                batch.push({ chinese: cn, vietnamese: vn });
-                mapUpdates[cn] = vn;
-              }
-            }
-          }
-          onProgress?.(`Đang ghi ${batch.length.toLocaleString()} mục Vietphrase vào IndexedDB...`, 90);
-          await saveVietphraseBatch(batch);
-          setVietphraseMap(prev => ({ ...prev, ...mapUpdates }));
-        }
-      } catch (err) {
-        console.warn('Could not load Vietphrase_fc812333.txt', err);
-      }
-
-      onProgress?.('Hoàn tất nạp dữ liệu QuickTranslator!', 100);
-      return { success: true, message: 'Đã nạp trọn bộ dữ liệu QuickTranslator thành công!' };
-    } catch (err: any) {
-      return { success: false, message: err.message || 'Lỗi khi nạp dữ liệu' };
+      await enqueue(async () => {
+        const bundle = await restoreDefaultDictionaries(onProgress);
+        applyDictionaryStores(bundle.stores);
+      });
+      return { success: true, message: 'Đã nạp bộ từ điển mặc định của Convert.' };
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : 'Không nạp được từ điển mặc định.' };
     }
   };
 
-  const exportAllDatabasesJson = async (): Promise<string> => {
-    return exportAllDatabases();
-  };
+  const exportAllDatabasesJson = (): Promise<string> => enqueue(async () => {
+    const stores = await Promise.all(DICTIONARY_STORES.map(name => readStore<any>(name)));
+    const map = (rows: any[]) => Object.fromEntries(rows.map(row => [row.chinese, row.vietnamese]));
+    const backup: BackupData = {
+      app: 'Convert', version: 3, exportedAt: new Date().toISOString(),
+      namesList: stores[0], namesMainMap: map(stores[1]), vietphraseMap: map(stores[2]),
+      luatNhanMap: Object.fromEntries(stores[3].map(row => [row.pattern, row.translation])),
+      pronounsMap: map(stores[4]), ignoredPhrasesList: stores[5].map(row => row.phrase), phienAmMap: map(stores[6]),
+      ...libraryRef.current, settings: settingsRef.current, readingStats: statsRef.current, readerState: await readReaderState(),
+    };
+    return JSON.stringify(backup);
+  });
 
-  const importAllDatabasesJson = async (jsonStr: string): Promise<{ success: boolean; message: string }> => {
-    const res = await importAllDatabases(jsonStr);
-    if (res.success) {
-      // Refresh local state from IndexedDB
-      const [names, main, vp, ln, pro, ign] = await Promise.all([
-        getStoredNames(),
-        getStoredNamesMain(),
-        getStoredVietphrase(),
-        getStoredLuatNhan(),
-        getStoredPronouns(),
-        getStoredIgnoredPhrases()
-      ]);
-      setNamesList(names);
-      setNamesMainMap(main);
-      setVietphraseMap(vp);
-      setLuatNhanMap(ln);
-      setPronounsMap(pro);
-      setIgnoredPhrasesList(ign);
+  const importAllDatabasesJson = (text: string): Promise<{ success: boolean; message: string }> => enqueue(async () => {
+    try {
+      const data = parseBackup(text);
+      const library = { novelsList: data.novelsList ?? libraryRef.current.novelsList,
+        savedChapters: data.savedChapters ?? libraryRef.current.savedChapters };
+      const preferences = data.settings ?? settingsRef.current;
+      const stats = data.readingStats ?? statsRef.current;
+      await replaceStores(backupStores(data), { library, settings: preferences, readingStats: stats, dictionariesInitialized: true, ...(data.readerState ? { readerState: data.readerState } : {}) });
+      if (data.readerState) clearStagedReadingPositions();
+      libraryRef.current = library;
+      settingsRef.current = preferences;
+      statsRef.current = stats;
+      setNovelsList(library.novelsList);
+      setSavedChapters(library.savedChapters);
+      setSettings(preferences);
+      setReadingStats(stats);
+      if (data.namesList !== undefined) setNamesList(data.namesList);
+      if (data.namesMainMap !== undefined) setNamesMainMap(data.namesMainMap);
+      if (data.vietphraseMap !== undefined) setVietphraseMap(data.vietphraseMap);
+      if (data.luatNhanMap !== undefined) setLuatNhanMap({ ...DEFAULT_LUAT_NHAN, ...data.luatNhanMap });
+      if (data.pronounsMap !== undefined) setPronounsMap({ ...DEFAULT_PRONOUNS, ...data.pronounsMap });
+      if (data.ignoredPhrasesList !== undefined) setIgnoredPhrasesList(data.ignoredPhrasesList);
+      return { success: true, message: 'Đã khôi phục dữ liệu. Các phần không có trong bản sao lưu cũ được giữ nguyên.' };
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : 'Không khôi phục được dữ liệu' };
     }
-    return res;
-  };
+  });
 
   const exportNamesTxt = (): string => exportSingleTxt('names');
   const importNamesTxt = (content: string): number => {
@@ -1107,72 +1021,114 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return count;
   };
 
-  const resetDictionaries = () => {
-    setNamesList(INITIAL_NAMES);
-    setVietphraseMap({});
-    clearNamesStore().then(() => saveNamesBatch(INITIAL_NAMES)).catch(console.error);
-    clearVietphraseStore().catch(console.error);
+  const applyDictionaryStores = (stores: Record<string, unknown[]>) => {
+    const map = (name: string) => Object.fromEntries((stores[name] as { chinese: string; vietnamese: string }[]).map(row => [row.chinese, row.vietnamese]));
+    setNamesList(stores[STORE_NAMES] as NameItem[]);
+    setNamesMainMap(map(STORE_NAMES_MAIN));
+    setVietphraseMap(map(STORE_VIETPHRASE));
+    setLuatNhanMap(Object.fromEntries((stores[STORE_LUAT_NHAN] as { pattern: string; translation: string }[]).map(row => [row.pattern, row.translation])));
+    setPronounsMap(map(STORE_PRONOUNS));
+    setIgnoredPhrasesList((stores[STORE_IGNORED] as { phrase: string }[]).map(row => row.phrase));
   };
 
+  const resetDictionaries = () => enqueue(async () => {
+    const bundle = await restoreDefaultDictionaries();
+    applyDictionaryStores(bundle.stores);
+  });
+
   // Novel management handlers
-  const addNovel = (book: Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>): string => {
-    const id = `novel-${Date.now()}`;
+  const addNovel = async (book: Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> => {
+    const id = `novel-${crypto.randomUUID()}`;
     const newBook: NovelBook = {
       ...book,
       id,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    setNovelsList(prev => [newBook, ...prev]);
+    await commitLibrary(current => ({ ...current, novelsList: [newBook, ...current.novelsList] }));
     return id;
   };
 
-  const updateNovel = (id: string, updates: Partial<NovelBook>) => {
-    setNovelsList(prev => prev.map(book => (book.id === id ? { ...book, ...updates, updatedAt: Date.now() } : book)));
-  };
+  const updateNovel = (id: string, updates: Partial<NovelBook>) => commitLibrary(current => ({
+    ...current, novelsList: current.novelsList.map(book => book.id === id ? { ...book, ...updates, id, updatedAt: Date.now() } : book),
+  }));
 
-  const deleteNovel = (id: string) => {
-    setNovelsList(prev => prev.filter(book => book.id !== id));
-    setSavedChapters(prev => prev.filter(chap => chap.novelId !== id));
-  };
+  const deleteNovel = (id: string) => commitLibrary(current => ({
+    novelsList: current.novelsList.filter(book => book.id !== id),
+    savedChapters: current.savedChapters.filter(chapter => chapter.novelId !== id),
+  }));
 
-  const toggleFavoriteNovel = (id: string) => {
-    setNovelsList(prev =>
-      prev.map(book =>
-        book.id === id ? { ...book, isFavorite: !book.isFavorite, updatedAt: Date.now() } : book
-      )
-    );
+  const toggleFavoriteNovel = (id: string) => commitLibrary(current => ({
+    ...current, novelsList: current.novelsList.map(book => book.id === id ? { ...book, isFavorite: !book.isFavorite, updatedAt: Date.now() } : book),
+  }));
+
+  const saveLibraryChapters = async (
+    book: string | Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>,
+    chapters: Omit<SavedChapter, 'id' | 'savedAt'>[],
+    options: ChapterSaveOptions = {},
+  ): Promise<{ novelId: string; count: number; overwritten: number; skipped: number }> => {
+    let result = { novelId: '', count: 0, overwritten: 0, skipped: 0 };
+    await commitLibrary(current => {
+      const existing = typeof book === 'string' ? current.novelsList.find(row => row.id === book) :
+        current.novelsList.find(row => row.title.toLowerCase() === book.title.toLowerCase());
+      if (typeof book === 'string' && !existing) throw new Error('Không tìm thấy bộ truyện.');
+      const novel: NovelBook = existing || { ...(book as Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>),
+        id: `novel-${crypto.randomUUID()}`, createdAt: Date.now(), updatedAt: Date.now() };
+      const incoming = chapters.map(chapter => {
+        const parsed = parseChapterHeader(chapter.title);
+        return { ...chapter, novelId: novel.id, novelTitle: novel.title,
+          chapterPrefix: chapter.chapterPrefix || parsed.prefix, chapterName: chapter.chapterName || parsed.name };
+      });
+      const merged = mergeLibraryChapters(current.savedChapters, incoming, options);
+      result = { novelId: novel.id, count: merged.count, overwritten: merged.overwritten, skipped: merged.skipped };
+      return {
+        novelsList: existing ? current.novelsList.map(row => row.id === novel.id ? { ...row, updatedAt: Date.now() } : row) : [novel, ...current.novelsList],
+        savedChapters: merged.chapters,
+      };
+    });
+    return result;
   };
 
   // Saved Chapters handlers
-  const saveChapter = (chapter: Omit<SavedChapter, 'id' | 'savedAt'>): string => {
-    const id = `chap-${Date.now()}`;
+  const saveChapter = async (chapter: Omit<SavedChapter, 'id' | 'savedAt'>, options: ChapterSaveOptions = {}): Promise<string> => {
+    let id = '';
     const parsed = parseChapterHeader(chapter.title);
     const safeNovel = (chapter.novelTitle || 'Tieu_Thuyet').trim().replace(/[\\/:*?"<>|]/g, '_');
     const safeChap = (chapter.title || 'Chuong').trim().replace(/[\\/:*?"<>|]/g, '_');
     const filePath = `/local/Convert/Lib/${safeNovel}/${safeChap}.txt`;
 
-    const newChapter: SavedChapter = {
+    const newChapter: Omit<SavedChapter, 'id' | 'savedAt'> = {
       ...chapter,
-      id,
       chapterPrefix: chapter.chapterPrefix || parsed.prefix,
       chapterName: chapter.chapterName || parsed.name,
       filePath,
-      savedAt: Date.now(),
     };
 
-    setSavedChapters(prev => [newChapter, ...prev]);
-
-    setNovelsList(prev =>
-      prev.map(b => (b.id === chapter.novelId || b.title === chapter.novelTitle ? { ...b, updatedAt: Date.now() } : b))
-    );
+    await commitLibrary(current => {
+      const merged = mergeLibraryChapters(current.savedChapters, [newChapter], options);
+      id = merged.ids[0];
+      return { savedChapters: merged.chapters,
+        novelsList: current.novelsList.map(book => book.id === chapter.novelId || book.title === chapter.novelTitle ? { ...book, updatedAt: Date.now() } : book),
+      };
+    });
 
     return id;
   };
 
-  const deleteSavedChapter = (id: string) => {
-    setSavedChapters(prev => prev.filter(chap => chap.id !== id));
-  };
+  const updateSavedChapter = (id: string, updates: Pick<SavedChapter, 'title' | 'originalText' | 'vietphraseText'>) => commitLibrary(current => {
+    if (!updates.title.trim()) throw new Error('Tên chương không được để trống.');
+    if (!current.savedChapters.some(chapter => chapter.id === id)) throw new Error('Chương đã bị xóa.');
+    const parsed = parseChapterHeader(updates.title.trim());
+    return { ...current, savedChapters: current.savedChapters.map(chapter => chapter.id === id ? { ...chapter, ...updates,
+      title: updates.title.trim(), chapterPrefix: parsed.prefix, chapterName: parsed.name, hanvietText: undefined, savedAt: Date.now() } : chapter) };
+  });
+
+  const deleteSavedChapter = (id: string) => commitLibrary(current => ({
+    ...current, savedChapters: current.savedChapters.filter(chapter => chapter.id !== id),
+  }));
+
+  if (storageError) return <div role="alert" className="p-6">Không mở được dữ liệu: {storageError}. Hãy kiểm tra dung lượng và quyền lưu trữ rồi tải lại trang.</div>;
+  if (!storageReady) return <div role="status" className="p-6">{dictionaryLoadStatus || 'Đang mở dữ liệu…'}</div>;
 
   return (
     <AppContext.Provider
@@ -1216,11 +1172,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         importAllDatabasesJson,
         novelsList,
         addNovel,
+        saveLibraryChapters,
         updateNovel,
         deleteNovel,
         toggleFavoriteNovel,
         savedChapters,
         saveChapter,
+        updateSavedChapter,
         deleteSavedChapter,
         settings,
         updateSettings,

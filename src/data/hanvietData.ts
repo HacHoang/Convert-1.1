@@ -1,5 +1,5 @@
 /**
- * Từ điển Hán Việt & Pinyin chuẩn cho TTV Translate
+ * Từ điển Hán Việt & Pinyin chuẩn cho Convert
  * Tự động loại bỏ trùng lặp và tương thích hoàn toàn TypeScript
  */
 

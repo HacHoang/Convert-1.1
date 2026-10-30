@@ -572981,7 +572981,6 @@ tmd=TMD/con mẹ nó
 TMD=con mẹ nó/TMD(con mẹ nó)
 Tou=đầu
 tri=tri
-ttv=tangthuvien
 tui=thối|腿
 tuǐ=thối/đùi/túc
 Tuǐ=chân

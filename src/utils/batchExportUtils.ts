@@ -1,3 +1,5 @@
+import { chapterFileNames } from './chapterFileNames';
+import { downloadFile } from './downloadFile';
 /**
  * Module xuất tệp hàng loạt (Batch Export Utility)
  * Hỗ trợ lưu trực tiếp vào Thư mục qua File System Access API
@@ -6,6 +8,39 @@
 
 import JSZip from 'jszip';
 import { BatchTranslationItem } from './chapterSplitter';
+
+/** Each selected chapter uses the same Blob download path as library EPUB. */
+export async function downloadChapterFiles(chapters: BatchTranslationItem[], format: 'txt' | 'docx', onProgress?: (count: number, total: number, filename: string) => void): Promise<{ count: number }> {
+  const names = chapterFileNames(chapters, format);
+  let count = 0;
+  for (const chapter of chapters) {
+    const filename = names.get(chapter.id)!;
+    try {
+      const title = chapter.translatedTitle || chapter.rawTitle;
+      const content = chapter.translatedContent || chapter.content;
+      const blob = format === 'docx' ? await createDocxBlob(title, content) : new Blob([`${title}\n\n${content}`], { type: 'text/plain;charset=utf-8' });
+      downloadFile(blob, filename);
+    } catch (error) {
+      throw new Error(`Không tạo được ${filename}. Đã gửi ${count}/${chapters.length} file tới trình tải xuống. ${error instanceof Error ? error.message : String(error)}`);
+    }
+    count++;
+    onProgress?.(count, chapters.length, filename);
+    // Yield between downloads so the browser can process each file request.
+    if (count < chapters.length) await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return { count };
+}
+
+/** Browsers without folder access download one TXT/DOCX, never an implicit ZIP. */
+export async function downloadCombinedChapters(chapters: BatchTranslationItem[], format: 'txt' | 'docx', title: string): Promise<void> {
+  const content = chapters.map(chapter => `${chapter.translatedTitle || chapter.rawTitle}\n\n${chapter.translatedContent || chapter.content}`).join('\n\n');
+  const blob = format === 'docx' ? await createDocxBlob(title, content) : new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = `${(title || 'Ban_dich').replace(/[\\/:*?"<>|]/g, '_')}.${format}`;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 /**
  * Thoát các ký tự đặc biệt cho XML chuẩn UTF-8
@@ -139,7 +174,7 @@ export async function createDocxBlob(
  * Kiểm tra xem trình duyệt có hỗ trợ File System Access API không
  */
 export function isDirectoryPickerSupported(): boolean {
-  return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+  return typeof window !== 'undefined' && typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === 'function';
 }
 
 /**
@@ -149,44 +184,70 @@ export function isDirectoryPickerSupported(): boolean {
 export async function saveChaptersToUserFolder(
   chapters: BatchTranslationItem[],
   format: 'txt' | 'docx',
-  onProgress?: (savedCount: number, total: number, currentName: string) => void
+  onProgress?: (savedCount: number, total: number, currentName: string) => void,
+  onStage?: (message: string) => void,
 ): Promise<{ success: boolean; count: number; folderName: string }> {
   if (!isDirectoryPickerSupported()) {
-    throw new Error('Trình duyệt hiện tại không hỗ trợ chọn thư mục trực tiếp. Vui lòng dùng tùy chọn "Tải file ZIP".');
+    throw new Error('Trình duyệt hiện tại không hỗ trợ chọn thư mục trực tiếp. Hãy mở ứng dụng trong trình duyệt hỗ trợ lưu thư mục.');
   }
 
-  // Mở hộp thoại chọn thư mục trên máy tính
-  // @ts-ignore
-  const dirHandle: FileSystemDirectoryHandle = await window.showDirectoryPicker({
-    mode: 'readwrite',
-    startIn: 'downloads',
-  });
+  // Directory pickers cannot supply writable handles when a browser host
+  // intercepts file choosers. Chromium reports that as AbortError too, but it
+  // is an environment failure, not the user cancelling the folder selection.
+  let dirHandle: FileSystemDirectoryHandle;
+  try {
+    // @ts-ignore
+    dirHandle = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
+  } catch (error) {
+    if (/intercepted.*(?:filechooser|file chooser)|setInterceptFileChooserDialog/i.test(String((error as Error)?.message || error))) {
+      throw new Error('Trình duyệt tích hợp đang chặn hộp chọn thư mục, nên chưa có file nào được lưu. Hãy mở ứng dụng trong trình duyệt ngoài (Chrome/Edge) để lưu vào thư mục trên máy.');
+    }
+    throw error;
+  }
+  onStage?.(`Đã chọn thư mục "${dirHandle.name}". Đang kiểm tra quyền ghi…`);
+  const permissionHandle = dirHandle as FileSystemDirectoryHandle & {
+    queryPermission?: (options: { mode: 'readwrite' }) => Promise<PermissionState>;
+    requestPermission?: (options: { mode: 'readwrite' }) => Promise<PermissionState>;
+  };
+  if (permissionHandle.queryPermission) {
+    let permission = await permissionHandle.queryPermission({ mode: 'readwrite' });
+    if (permission !== 'granted' && permissionHandle.requestPermission) permission = await permissionHandle.requestPermission({ mode: 'readwrite' });
+    if (permission !== 'granted') throw new Error(`Chưa có quyền ghi vào thư mục "${dirHandle.name}". Hãy cho phép trình duyệt chỉnh sửa file trong thư mục rồi lưu lại.`);
+  }
 
   const total = chapters.length;
   let saved = 0;
 
+  const names = chapterFileNames(chapters, format);
   for (const chap of chapters) {
     // Quy tắc: CHỈ GỒM STT CHƯƠNG
-    const fileName = `${chap.chapterNum}.${format}`;
-    onProgress?.(saved + 1, total, fileName);
+    const fileName = names.get(chap.id)!;
 
+    const content = chap.translatedContent || chap.content;
     const fullText = chap.translatedTitle
-      ? `${chap.translatedTitle}\n\n${chap.translatedContent}`
-      : chap.translatedContent;
+      ? `${chap.translatedTitle}\n\n${content}`
+      : content;
 
-    const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
-    // @ts-ignore
-    const writable = await fileHandle.createWritable();
-
-    if (format === 'docx') {
-      const docxBlob = await createDocxBlob(chap.translatedTitle, chap.translatedContent);
-      await writable.write(docxBlob);
-    } else {
-      await writable.write(fullText);
+    let writable: FileSystemWritableFileStream | undefined;
+    try {
+      onStage?.(`Đang ghi ${fileName} vào "${dirHandle.name}" (${saved}/${total})…`);
+      const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+      writable = await fileHandle.createWritable();
+      if (format === 'docx') {
+        const docxBlob = await createDocxBlob(chap.translatedTitle || chap.rawTitle, content);
+        await writable.write(docxBlob);
+      } else {
+        await writable.write(fullText);
+      }
+      await writable.close();
+      writable = undefined;
+      if (fileHandle.getFile && (await fileHandle.getFile()).size === 0) throw new Error('File được tạo nhưng chưa có nội dung.');
+    } catch (error) {
+      if (writable) await writable.abort().catch(() => {});
+      throw new Error(`Không lưu được ${fileName}. Đã lưu ${saved}/${total} chương. ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    await writable.close();
     saved++;
+    onProgress?.(saved, total, fileName);
   }
 
   return {
@@ -208,15 +269,17 @@ export async function downloadChaptersAsZip(
 ): Promise<void> {
   const zip = new JSZip();
 
+  const names = chapterFileNames(chapters, format);
   for (let i = 0; i < chapters.length; i++) {
     const chap = chapters[i];
-    const fileName = `${chap.chapterNum}.${format}`;
+    const fileName = names.get(chap.id)!;
+    const content = chap.translatedContent || chap.content;
     const fullText = chap.translatedTitle
-      ? `${chap.translatedTitle}\n\n${chap.translatedContent}`
-      : chap.translatedContent;
+      ? `${chap.translatedTitle}\n\n${content}`
+      : content;
 
     if (format === 'docx') {
-      const blob = await createDocxBlob(chap.translatedTitle, chap.translatedContent);
+      const blob = await createDocxBlob(chap.translatedTitle || chap.rawTitle, content);
       zip.file(fileName, blob);
     } else {
       zip.file(fileName, fullText);

@@ -1,8 +1,10 @@
+import { styleRevision, stylePhraseDictionary, styleNameDictionary, type TranslationStyle } from './translationStyle';
+import { filterWebsiteNotices } from './paragraphFilters';
 /**
- * TTV Translate Core Engine
+ * Convert Core Engine
  * Thuật toán Forward Maximum Matching (FMM) + QuickTranslator Multiplication Rules (Luật Nhân cấp 2)
  * Xử lý chính xác các trợ từ như 了 (liễu), 的 (đích), 着 (trước), v.v.
- * Tương thích 100% cơ chế Quick Translator và TTV Translate Android.
+ * Offline dictionary conversion inspired by QuickTranslator data formats.
  */
 
 import { HANVIET_DICT, getHanVietChar, getPinyinChar } from '../data/hanvietData';
@@ -195,14 +197,35 @@ const SORTED_PRONOUNS = Object.entries(DEFAULT_PRONOUNS)
   .sort((a, b) => b[0].length - a[0].length);
 
 /**
- * Trình biên dịch chính của TTV Translate
+ * Trình biên dịch chính của Convert
  * Áp dụng FMM + Luật Nhân cấp 2 + Bộ lọc quảng cáo
  */
+const EMPTY_NAMES: NameItem[] = [];
+const EMPTY_VIETPHRASE: Record<string, string> = {};
+const namesCache = new WeakMap<NameItem[], Map<string, { viet: string; category: string; isCustom: boolean }>>();
+const phraseCache = new WeakMap<Record<string, string>, Map<TranslationStyle, Map<string, { viet: string; isCustom: boolean }>>>();
+const cachedStyleRevisions = new WeakMap<object, number>();
+const lengthIndexes = new WeakMap<object, Map<string, number[]>>();
+function dictionaryLengths(dictionary: Map<string, unknown>) {
+  const cached = lengthIndexes.get(dictionary);
+  if (cached) return cached;
+  const sets = new Map<string, Set<number>>();
+  for (const key of dictionary.keys()) {
+    if (!key) continue;
+    if (!sets.has(key[0])) sets.set(key[0], new Set());
+    sets.get(key[0])!.add(key.length);
+  }
+  const index = new Map([...sets].map(([char, lengths]) => [char, [...lengths].sort((a, b) => b - a)]));
+  lengthIndexes.set(dictionary, index);
+  return index;
+}
+
 export function convertText(
   source: string,
-  userNames: NameItem[] = [],
-  userVietphrase: Record<string, string> = {},
+  userNames: NameItem[] = EMPTY_NAMES,
+  userVietphrase: Record<string, string> = EMPTY_VIETPHRASE,
   options: {
+    style?: TranslationStyle;
     prioritizeNames?: boolean;
     capitalizeSentences?: boolean;
     customLuatNhan?: Record<string, string>;
@@ -222,11 +245,18 @@ export function convertText(
 
   // 1. Tiền xử lý: Danh sách cụm từ bỏ qua (giữ nguyên chữ Hán không dịch)
   const ignoredList = [...(options.customIgnored || DEFAULT_IGNORED_PHRASES)].sort((a, b) => b.length - a.length);
-  const cleanSource = source;
+  // Hide a copied home breadcrumb only when it directly precedes a chapter heading.
+  // Mask rather than remove it so selection offsets still refer to the original text.
+  const cleanSource = filterWebsiteNotices(source, true).replace(
+    /^(\s*(?:首页|首頁|主页|主頁)\s*[/／>›»|]\s*)(?=第\s*[0-9零〇一二两兩三四五六七八九十百千万萬]+\s*[章回节節卷])/u,
+    prefix => prefix.replace(/[^\r\n]/g, ' '),
+  );
 
 
   // 2. Xây dựng tra cứu Names Map: INITIAL_NAMES -> DEFAULT_NAMES2 -> userNames
-  const customNamesMap = new Map<string, { viet: string; category: string; isCustom: boolean }>();
+  let customNamesMap = namesCache.get(userNames);
+  if (!customNamesMap) {
+  customNamesMap = new Map<string, { viet: string; category: string; isCustom: boolean }>();
   
   for (const n of INITIAL_NAMES) {
     customNamesMap.set(n.chinese, {
@@ -254,13 +284,46 @@ export function convertText(
     });
   }
 
+  namesCache.set(userNames, customNamesMap);
+  }
+
   // 3. Xây dựng Vietphrase Map
-  const mergedVietphrase = new Map<string, { viet: string; isCustom: boolean }>();
+  const style = options.style || 'neutral';
+  const styleNames = Object.entries(styleNameDictionary(style));
+  if (styleNames.length) {
+    customNamesMap = new Map(customNamesMap);
+    for (const [chinese, viet] of styleNames) {
+      if (!customNamesMap.get(chinese)?.isCustom) {
+        customNamesMap.set(chinese, { viet, category: 'Nhân vật', isCustom: false });
+      }
+    }
+  }
+  if (cachedStyleRevisions.get(userVietphrase) !== styleRevision()) {
+    phraseCache.delete(userVietphrase);
+    cachedStyleRevisions.set(userVietphrase, styleRevision());
+  }
+  const stylePhrases = stylePhraseDictionary(style);
+  let mergedVietphrase = phraseCache.get(userVietphrase)?.get(style);
+  if (!mergedVietphrase) {
+  mergedVietphrase = new Map<string, { viet: string; isCustom: boolean }>();
   for (const [k, v] of Object.entries(DEFAULT_VIETPHRASE)) {
     mergedVietphrase.set(k, { viet: v, isCustom: false });
   }
   for (const [k, v] of Object.entries(userVietphrase)) {
     mergedVietphrase.set(k, { viet: v, isCustom: true });
+  }
+
+  for (const [key, value] of Object.entries(stylePhrases)) {
+    const existing = mergedVietphrase.get(key);
+    const original = existing?.viet || '';
+    // Keep the source meanings available for inspection and manual selection.
+    const alternatives = original.split('/').filter(meaning => meaning.trim() && meaning.trim() !== value);
+    mergedVietphrase.set(key, { viet: [value, ...alternatives].join('/'), isCustom: false });
+  }
+  if (!phraseCache.has(userVietphrase)) phraseCache.set(userVietphrase, new Map());
+  // Retain only one compiled style per dictionary; switching must not triple the large map.
+  phraseCache.get(userVietphrase)!.clear();
+  phraseCache.get(userVietphrase)!.set(style, mergedVietphrase);
   }
 
   // Chuẩn bị danh sách luật nhân và đại từ (có merge custom nếu có)
@@ -308,7 +371,8 @@ export function convertText(
   const hanvietLines: string[] = [];
 
   let tokenIndex = 0;
-  const MAX_WINDOW = 12; // Cửa sổ tối đa tìm từ ghép
+  const nameLengths = dictionaryLengths(customNamesMap);
+  const phraseLengths = dictionaryLengths(mergedVietphrase);
 
   let lastSearchIndex = 0;
   for (const p of sentenceChunks) {
@@ -360,8 +424,8 @@ export function convertText(
           const token: TranslatedToken = {
             id: `tok-${tokenIndex++}`,
             original: ign,
-            translated: ign, // Giữ nguyên chữ Hán theo chuẩn QuickTranslator
-            hanviet: ign,
+            translated: '', // Omit ignored phrases without changing source offsets
+            hanviet: '',
             pinyin: '',
             isName: false,
             isCustom: true,
@@ -371,8 +435,8 @@ export function convertText(
           };
           pTokens.push(token);
           allTokens.push(token);
-          pVietWords.push(ign);
-          pHanvietWords.push(ign);
+
+
           i += ign.length;
           matched = true;
           matchedIgnored = true;
@@ -380,6 +444,17 @@ export function convertText(
         }
       }
       if (matchedIgnored) continue;
+
+      // Keep Latin words, Vietnamese diacritics and numeric runs intact.
+      const literal = p.slice(i).match(/^[\p{Script=Latin}\p{M}\p{N}]+/u)?.[0];
+      if (literal) {
+        const token: TranslatedToken = { id: `tok-${tokenIndex++}`, original: literal, translated: literal, hanviet: literal, pinyin: '', isName: false, isCustom: false, isPunctuation: false, charStart: currentBaseOffset + i, charEnd: currentBaseOffset + i + literal.length };
+        pTokens.push(token); allTokens.push(token);
+        pVietWords.push(literal); pHanvietWords.push(literal);
+        i += literal.length;
+        continue;
+      }
+
 
       // ƯU TIÊN 1: So khớp THUẬT TOÁN NHÂN (Luật Nhân cấp 2: Pronouns + Names)
       for (const rule of activeLuatNhanRules) {
@@ -398,14 +473,15 @@ export function convertText(
           if (p.startsWith(proCn, subjIdx)) {
             if (proCn.length > matchedSubjCn.length) {
               matchedSubjCn = proCn;
-              matchedSubjVn = proVn.split('/')[0];
+              matchedSubjVn = (stylePhrases[proCn] ?? proVn).split('/')[0];
             }
           }
         }
 
         // B. Kiểm tra Names nếu chưa khớp đại từ
         if (!matchedSubjCn) {
-          for (let nw = Math.min(len - subjIdx, 6); nw >= 2; nw--) {
+          for (const nw of nameLengths.get(p[subjIdx]) || []) {
+            if (nw > len - subjIdx) continue;
             const nameSub = p.substring(subjIdx, subjIdx + nw);
             if (customNamesMap.has(nameSub)) {
               matchedSubjCn = nameSub;
@@ -456,9 +532,9 @@ export function convertText(
       if (matched) continue;
 
       // ƯU TIÊN 2 & 3: Tìm chuỗi dài nhất khớp trong Name hoặc Vietphrase (Forward Maximum Matching)
-      const windowLen = Math.min(len - i, MAX_WINDOW);
-
-      for (let w = windowLen; w >= 2; w--) {
+      const lengths = [...new Set([...(nameLengths.get(char) || []), ...(phraseLengths.get(char) || [])])].sort((a, b) => b - a);
+      for (const w of lengths) {
+        if (w < 2 || w > len - i) continue;
         const sub = p.substring(i, i + w);
 
         // 2. Khớp Name (Tên riêng, môn phái, địa danh)
