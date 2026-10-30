@@ -27,6 +27,8 @@ export interface TranslatedToken {
   category?: string;
   alternatives?: string[];
   rawVietphrase?: string;
+  charStart?: number;
+  charEnd?: number;
 }
 
 /**
@@ -218,14 +220,9 @@ export function convertText(
     };
   }
 
-  // 1. Tiền xử lý: Loại bỏ các cụm watermark / quảng cáo từ IgnoredChinesePhrases
-  const ignoredList = options.customIgnored || DEFAULT_IGNORED_PHRASES;
-  let cleanSource = source;
-  for (const phrase of ignoredList) {
-    if (phrase && phrase.length >= 4 && cleanSource.includes(phrase)) {
-      cleanSource = cleanSource.split(phrase).join('');
-    }
-  }
+  // 1. Tiền xử lý: Danh sách cụm từ bỏ qua (giữ nguyên chữ Hán không dịch)
+  const ignoredList = [...(options.customIgnored || DEFAULT_IGNORED_PHRASES)].sort((a, b) => b.length - a.length);
+  const cleanSource = source;
 
 
   // 2. Xây dựng tra cứu Names Map: INITIAL_NAMES -> DEFAULT_NAMES2 -> userNames
@@ -313,10 +310,17 @@ export function convertText(
   let tokenIndex = 0;
   const MAX_WINDOW = 12; // Cửa sổ tối đa tìm từ ghép
 
+  let lastSearchIndex = 0;
   for (const p of sentenceChunks) {
     const pTokens: TranslatedToken[] = [];
     const pVietWords: string[] = [];
     const pHanvietWords: string[] = [];
+
+    const pStart = cleanSource.indexOf(p, lastSearchIndex);
+    if (pStart !== -1) {
+      lastSearchIndex = pStart + p.length;
+    }
+    const currentBaseOffset = pStart !== -1 ? pStart : 0;
 
     let i = 0;
     const len = p.length;
@@ -335,7 +339,9 @@ export function convertText(
           pinyin: '',
           isName: false,
           isCustom: false,
-          isPunctuation: true
+          isPunctuation: true,
+          charStart: currentBaseOffset + i,
+          charEnd: currentBaseOffset + i + 1,
         };
         pTokens.push(token);
         allTokens.push(token);
@@ -346,6 +352,34 @@ export function convertText(
       }
 
       let matched = false;
+
+      // ƯU TIÊN 0: Cụm từ Bỏ qua (IgnoredChinesePhrases - Giữ nguyên chữ Hán gốc, không dịch)
+      let matchedIgnored = false;
+      for (const ign of ignoredList) {
+        if (ign && p.startsWith(ign, i)) {
+          const token: TranslatedToken = {
+            id: `tok-${tokenIndex++}`,
+            original: ign,
+            translated: ign, // Giữ nguyên chữ Hán theo chuẩn QuickTranslator
+            hanviet: ign,
+            pinyin: '',
+            isName: false,
+            isCustom: true,
+            isPunctuation: false,
+            charStart: currentBaseOffset + i,
+            charEnd: currentBaseOffset + i + ign.length,
+          };
+          pTokens.push(token);
+          allTokens.push(token);
+          pVietWords.push(ign);
+          pHanvietWords.push(ign);
+          i += ign.length;
+          matched = true;
+          matchedIgnored = true;
+          break;
+        }
+      }
+      if (matchedIgnored) continue;
 
       // ƯU TIÊN 1: So khớp THUẬT TOÁN NHÂN (Luật Nhân cấp 2: Pronouns + Names)
       for (const rule of activeLuatNhanRules) {
@@ -404,6 +438,8 @@ export function convertText(
               isName: false,
               isCustom: false,
               isPunctuation: false,
+              charStart: currentBaseOffset + i,
+              charEnd: currentBaseOffset + i + totalRuleLen,
             };
 
             pTokens.push(token);
@@ -448,7 +484,9 @@ export function convertText(
             isName: true,
             isCustom: nameInfo.isCustom,
             isPunctuation: false,
-            category: nameInfo.category
+            category: nameInfo.category,
+            charStart: currentBaseOffset + i,
+            charEnd: currentBaseOffset + i + w,
           };
 
           pTokens.push(token);
@@ -483,7 +521,9 @@ export function convertText(
             isCustom: vpInfo.isCustom,
             isPunctuation: false,
             alternatives,
-            rawVietphrase: vpInfo.viet
+            rawVietphrase: vpInfo.viet,
+            charStart: currentBaseOffset + i,
+            charEnd: currentBaseOffset + i + w,
           };
 
           pTokens.push(token);
@@ -533,7 +573,9 @@ export function convertText(
         isCustom: isCust,
         isPunctuation: false,
         alternatives: singleAlternatives,
-        rawVietphrase: singleRawVp
+        rawVietphrase: singleRawVp,
+        charStart: currentBaseOffset + i,
+        charEnd: currentBaseOffset + i + 1,
       };
 
       pTokens.push(token);

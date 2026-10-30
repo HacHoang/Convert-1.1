@@ -1,6 +1,6 @@
 {
-  "summary":  "Kế hoạch khắc phục: Sửa lỗi bôi đen đa từ bị lan sang các câu khác (loại bỏ hoàn toàn duyệt chuỗi con toàn chương), cho phép chỉnh sửa/thêm/xóa văn bản tiếng Trung trực tiếp như trình soạn thảo bình thường, và liên kết tệp Vietphrase gốc 23.5MB chứa trọn bộ thành ngữ 4 chữ.",
-  "updatedAt":  "2026-10-27T15:04:32.791300029Z",
+  "summary":  "Kế hoạch triển khai 5 tính năng nâng cấp toàn diện cho Tab Dịch Nhanh (TranslateView) tích hợp trực tiếp trên thanh điều khiển phía trên: Cuộn đồng bộ 2 chiều, Tìm & Thay thế nội dung, Điều hướng chuyển chương trước/sau, Tự động cuộn theo giọng đọc TTS, và Hệ thống phím tắt nhanh.",
+  "updatedAt":  "2026-10-29T17:09:56.679827609Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -69,6 +69,8 @@ export const DictionaryView: React.FC = () => {
     pronounsMap,
     ignoredPhrasesList,
     deletePhrase,
+    updatePhrase,
+    deleteMultiplePhrases,
     exportSingleTxt,
     importSingleTxt,
     clearSpecificStore,
@@ -106,9 +108,24 @@ export const DictionaryView: React.FC = () => {
   const [newVal, setNewVal] = useState('');
   const [newCategory, setNewCategory] = useState<NameItem['category']>('Nhân vật');
 
-  // Edit inline
-  const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [editVal, setEditVal] = useState('');
+  // Edit inline cả từ tiếng Trung và nghĩa tiếng Việt (2-way editable)
+  const [editingItem, setEditingItem] = useState<{
+    originalChinese: string;
+    editChinese: string;
+    editViet: string;
+    id?: string;
+  } | null>(null);
+
+  // Chọn nhiều từ để xóa 1 lần
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+
+  // Hộp thoại xác nhận tùy biến trước khi xóa từ điển
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState<{
+    isOpen: boolean;
+    items: string[];
+    count: number;
+    sampleTitle?: string;
+  } | null>(null);
 
   // Chuyển tab và reset trang
   const handleTabChange = (tab: UnifiedTab) => {
@@ -116,7 +133,8 @@ export const DictionaryView: React.FC = () => {
     setSearchTerm('');
     setSelectedCategory('all');
     setCurrentPage(1);
-    setEditingKey(null);
+    setEditingItem(null);
+    setSelectedKeys(new Set());
   };
 
   // 1. Dữ liệu Vietphrase gộp (DEFAULT + User)
@@ -431,33 +449,101 @@ export const DictionaryView: React.FC = () => {
     setIsAddModalOpen(false);
   };
 
-  // Lưu sửa đổi inline
-  const handleSaveEdit = (chineseKey: string, oldId?: string) => {
-    if (!editVal.trim()) return;
-    const cleanVn = editVal.trim();
-
-    if (activeTab === 'names_custom' && oldId) {
-      updateName(oldId, { vietnamese: cleanVn });
-    } else if (activeTab === 'vietphrase') {
-      addVietphrase(chineseKey, cleanVn);
-    } else {
-      importSingleTxt(activeTab === 'names_main' ? 'names_main' : activeTab === 'luatnhan' ? 'luatnhan' : 'pronouns', `${chineseKey}=${cleanVn}`);
-    }
-
-    setEditingKey(null);
-    showToast(`Đã cập nhật: ${chineseKey} = ${cleanVn}`);
+  // Chọn hoặc bỏ chọn 1 từ
+  const toggleSelectKey = (chinese: string) => {
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(chinese)) next.delete(chinese);
+      else next.add(chinese);
+      return next;
+    });
   };
 
-  // Xóa 1 mục
-  const handleDeleteItem = (chineseKey: string, oldId?: string) => {
-    if (activeTab === 'names_custom' && oldId) {
-      deleteName(oldId);
-    } else if (activeTab === 'vietphrase') {
-      deleteVietphrase(chineseKey);
-    } else {
-      deletePhrase(chineseKey);
+  // Chọn hoặc bỏ chọn tất cả trên trang hiện tại
+  const handleToggleSelectAll = (currentPageItems: Array<{ chinese: string }>) => {
+    const allSelected = currentPageItems.length > 0 && currentPageItems.every(i => selectedKeys.has(i.chinese));
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        currentPageItems.forEach(i => next.delete(i.chinese));
+      } else {
+        currentPageItems.forEach(i => next.add(i.chinese));
+      }
+      return next;
+    });
+  };
+
+  // Lưu sửa đổi 2 chiều cả từ tiếng Trung và nghĩa tiếng Việt
+  const handleSaveEdit = () => {
+    if (!editingItem) return;
+    const { originalChinese, editChinese, editViet, id } = editingItem;
+    const cleanCn = editChinese.trim();
+    const cleanVn = editViet.trim();
+
+    if (!cleanCn || !cleanVn) {
+      showToast('Từ tiếng Trung và nghĩa tiếng Việt không được để trống!', true);
+      return;
     }
-    showToast(`Đã xóa: ${chineseKey}`);
+
+    if (activeTab === 'names_custom') {
+      updatePhrase(originalChinese, cleanCn, cleanVn, 'name');
+    } else if (activeTab === 'vietphrase') {
+      updatePhrase(originalChinese, cleanCn, cleanVn, 'vietphrase');
+    } else {
+      if (originalChinese !== cleanCn) {
+        deletePhrase(originalChinese);
+      }
+      importSingleTxt(activeTab === 'names_main' ? 'names_main' : activeTab === 'luatnhan' ? 'luatnhan' : 'pronouns', `${cleanCn}=${cleanVn}`);
+    }
+
+    setEditingItem(null);
+    showToast(`Đã lưu cập nhật: ${cleanCn} = ${cleanVn}`);
+  };
+
+  // Yêu cầu xóa 1 từ (kích hoạt hộp thoại xác nhận)
+  const handleRequestDeleteItem = (chineseKey: string) => {
+    setDeleteConfirmModal({
+      isOpen: true,
+      items: [chineseKey],
+      count: 1,
+      sampleTitle: chineseKey
+    });
+  };
+
+  // Yêu cầu xóa hàng loạt các từ đã chọn (kích hoạt hộp thoại xác nhận với số lượng)
+  const handleRequestBulkDelete = () => {
+    if (selectedKeys.size === 0) return;
+    setDeleteConfirmModal({
+      isOpen: true,
+      items: Array.from(selectedKeys),
+      count: selectedKeys.size
+    });
+  };
+
+  // Xác nhận thực hiện xóa sau khi người dùng bấm đồng ý trên Modal
+  const handleConfirmDelete = () => {
+    if (!deleteConfirmModal || deleteConfirmModal.items.length === 0) return;
+    const items = deleteConfirmModal.items;
+    const count = items.length;
+
+    if (activeTab === 'names_custom') {
+      deleteMultiplePhrases(items, 'name');
+    } else if (activeTab === 'vietphrase') {
+      deleteMultiplePhrases(items, 'vietphrase');
+    } else if (activeTab === 'pronouns_ignored') {
+      deleteMultiplePhrases(items, 'ignored');
+    } else {
+      items.forEach(cn => deletePhrase(cn));
+    }
+
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      items.forEach(k => next.delete(k));
+      return next;
+    });
+
+    setDeleteConfirmModal(null);
+    showToast(`Đã xóa thành công ${count} từ khỏi từ điển!`);
   };
 
   const isLight = settings.theme === 'light';
@@ -736,6 +822,32 @@ export const DictionaryView: React.FC = () => {
         </div>
       </div>
 
+      {/* BULK ACTION BAR KHI ĐANG CHỌN NHIỀU TỪ */}
+      {selectedKeys.size > 0 && (
+        <div className="px-4 py-2 bg-cyan-950/90 border-b border-cyan-800/80 text-cyan-200 text-xs flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-1 duration-150">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-white">Đã chọn {selectedKeys.size} từ</span>
+            <span className="text-[11px] opacity-75">trong bảng {activeTab}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSelectedKeys(new Set())}
+              className="px-2.5 py-1 rounded-md bg-cyan-900/60 hover:bg-cyan-900 text-cyan-200 text-xs cursor-pointer transition-colors"
+            >
+              Bỏ chọn tất cả
+            </button>
+            <button
+              onClick={handleRequestBulkDelete}
+              className="px-3 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+            >
+              <Trash2 size={13} />
+              <span>Xóa {selectedKeys.size} từ đã chọn</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* DATA GRID / BẢNG DỮ LIỆU HIỂN THỊ */}
       <div className="flex-1 overflow-y-auto px-4 py-2">
         {paginatedData.length === 0 ? (
@@ -744,90 +856,140 @@ export const DictionaryView: React.FC = () => {
             <p>Không tìm thấy mục nào phù hợp</p>
           </div>
         ) : (
-          <div className="divide-y divide-neutral-800/40 text-xs font-mono">
-            {paginatedData.map((item, idx) => {
-              const isEditing = editingKey === item.chinese;
+          <div className="text-xs font-mono">
+            {/* Table Header: Cột Chọn tất cả, Từ tiếng Trung, Nghĩa tiếng Việt, Thao tác */}
+            <div className={`flex items-center gap-2.5 py-1.5 px-2 border-b text-[11px] font-semibold opacity-70 ${
+              isLight ? 'border-neutral-200 text-neutral-700' : isSepia ? 'border-[#dfcdb0] text-[#3d2e1e]' : 'border-neutral-800 text-neutral-400'
+            }`}>
+              <input 
+                type="checkbox"
+                checked={paginatedData.length > 0 && paginatedData.every(i => selectedKeys.has(i.chinese))}
+                onChange={() => handleToggleSelectAll(paginatedData)}
+                className="rounded border-neutral-700 bg-neutral-800 text-cyan-500 w-3.5 h-3.5 cursor-pointer shrink-0"
+                title="Chọn hoặc bỏ chọn tất cả trên trang này"
+              />
+              <span className="w-1/3 min-w-[120px]">Từ Gốc Tiếng Trung (Bên trái)</span>
+              <span className="flex-1">Nghĩa Tiếng Việt</span>
+              <span className="w-16 text-right">Thao tác</span>
+            </div>
 
-              return (
-                <div 
-                  key={`${item.chinese}-${idx}`}
-                  className="py-2 px-1.5 flex items-center justify-between gap-3 hover:bg-neutral-800/20 transition-colors rounded-lg group"
-                >
-                  {/* Cột Từ Gốc Tiếng Trung / Pattern */}
-                  <div className="w-1/3 min-w-[120px] truncate flex items-center gap-2 font-sans font-medium text-sm">
-                    <span className="text-cyan-400 font-semibold">{item.chinese}</span>
-                    {(item as any).isCustom && (
-                      <span className="text-[10px] text-amber-400 font-normal px-1 py-0.2 rounded bg-amber-950/50 border border-amber-800/40">
-                        Cá nhân
-                      </span>
-                    )}
-                    {(item as any).category && (
-                      <span className="text-[10px] opacity-60 font-normal">
-                        · {(item as any).category}
-                      </span>
-                    )}
-                  </div>
+            <div className="divide-y divide-neutral-800/40">
+              {paginatedData.map((item, idx) => {
+                const isEditing = editingItem?.originalChinese === item.chinese;
+                const isChecked = selectedKeys.has(item.chinese);
 
-                  {/* Cột Nghĩa Tiếng Việt / Bản Dịch */}
-                  <div className="flex-1 min-w-0 font-sans">
-                    {isEditing ? (
-                      <div className="flex items-center gap-1.5">
+                return (
+                  <div 
+                    key={`${item.chinese}-${idx}`}
+                    className={`py-2 px-2 flex items-center justify-between gap-3 transition-colors rounded-lg group ${
+                      isChecked 
+                        ? 'bg-cyan-950/30' 
+                        : isLight ? 'hover:bg-neutral-100' : isSepia ? 'hover:bg-[#ebd8b7]/40' : 'hover:bg-neutral-800/30'
+                    }`}
+                  >
+                    {/* Checkbox chọn dòng */}
+                    <input 
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleSelectKey(item.chinese)}
+                      className="rounded border-neutral-700 bg-neutral-800 text-cyan-500 w-3.5 h-3.5 cursor-pointer shrink-0"
+                    />
+
+                    {/* Cột Từ Gốc Tiếng Trung (Bên trái) - Có thể sửa khi bấm nút Sửa */}
+                    <div className="w-1/3 min-w-[120px] truncate flex items-center gap-2 font-sans font-medium text-sm">
+                      {isEditing ? (
                         <input
                           type="text"
-                          value={editVal}
-                          onChange={(e) => setEditVal(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(item.chinese, (item as any).id)}
-                          className="flex-1 px-2 py-1 rounded bg-[#2a2b30] border border-cyan-500 text-xs text-white outline-none"
-                          autoFocus
+                          value={editingItem.editChinese}
+                          onChange={(e) => setEditingItem({ ...editingItem, editChinese: e.target.value })}
+                          className="w-full px-2 py-1 rounded bg-[#2a2b30] border border-cyan-500 text-xs text-cyan-300 font-serif outline-none"
+                          placeholder="Từ tiếng Trung"
                         />
-                        <button
-                          onClick={() => handleSaveEdit(item.chinese, (item as any).id)}
-                          className="p-1 rounded bg-cyan-600 text-white hover:bg-cyan-500 cursor-pointer"
-                        >
-                          <Check size={12} />
-                        </button>
-                        <button
-                          onClick={() => setEditingKey(null)}
-                          className="p-1 rounded bg-neutral-700 text-neutral-300 hover:bg-neutral-600 cursor-pointer"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-neutral-200">
-                        {item.vietnamese || <span className="opacity-40 italic">(Lược bỏ / rỗng)</span>}
-                      </span>
-                    )}
-                  </div>
+                      ) : (
+                        <>
+                          <span className="text-cyan-400 font-semibold">{item.chinese}</span>
+                          {(item as any).isCustom && (
+                            <span className="text-[10px] text-amber-400 font-normal px-1 py-0.2 rounded bg-amber-950/50 border border-amber-800/40">
+                              Cá nhân
+                            </span>
+                          )}
+                          {(item as any).category && (
+                            <span className="text-[10px] opacity-60 font-normal">
+                              · {(item as any).category}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
 
-                  {/* Cột Nút Hành Động (Sửa / Xóa) */}
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                    {!isEditing && (
-                      <button
-                        onClick={() => {
-                          setEditingKey(item.chinese);
-                          setEditVal(item.vietnamese);
-                        }}
-                        className="p-1 text-neutral-400 hover:text-cyan-300 hover:bg-neutral-800 rounded cursor-pointer"
-                        title="Sửa nghĩa"
-                      >
-                        <Edit2 size={13} />
-                      </button>
-                    )}
+                    {/* Cột Nghĩa Tiếng Việt / Bản Dịch - Có thể sửa khi bấm nút Sửa */}
+                    <div className="flex-1 min-w-0 font-sans">
+                      {isEditing ? (
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            value={editingItem.editViet}
+                            onChange={(e) => setEditingItem({ ...editingItem, editViet: e.target.value })}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit()}
+                            className="flex-1 px-2 py-1 rounded bg-[#2a2b30] border border-cyan-500 text-xs text-white outline-none"
+                            placeholder="Nghĩa tiếng Việt"
+                            autoFocus
+                          />
+                          <button
+                            onClick={handleSaveEdit}
+                            className="p-1 rounded bg-cyan-600 text-white hover:bg-cyan-500 cursor-pointer"
+                            title="Lưu thay đổi cả tiếng Trung và tiếng Việt"
+                          >
+                            <Check size={12} />
+                          </button>
+                          <button
+                            onClick={() => setEditingItem(null)}
+                            className="p-1 rounded bg-neutral-700 text-neutral-300 hover:bg-neutral-600 cursor-pointer"
+                            title="Hủy"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ) : (
+                        <span className={isLight ? 'text-neutral-800' : isSepia ? 'text-[#3d2e1e]' : 'text-neutral-200'}>
+                          {item.vietnamese || <span className="opacity-40 italic">(Lược bỏ / rỗng)</span>}
+                        </span>
+                      )}
+                    </div>
 
-                    {activeTab !== 'phienam' && (
-                      <button
-                        onClick={() => handleDeleteItem(item.chinese, (item as any).id)}
-                        className="p-1 text-neutral-400 hover:text-red-400 hover:bg-neutral-800 rounded cursor-pointer"
-                        title="Xóa mục này"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    )}
+                    {/* Cột Nút Hành Động (Sửa cả 2 từ / Xóa có xác nhận) */}
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 w-16 justify-end">
+                      {!isEditing && (
+                        <button
+                          onClick={() => {
+                            setEditingItem({
+                              originalChinese: item.chinese,
+                              editChinese: item.chinese,
+                              editViet: item.vietnamese,
+                              id: (item as any).id
+                            });
+                          }}
+                          className="p-1 text-neutral-400 hover:text-cyan-300 hover:bg-neutral-800 rounded cursor-pointer"
+                          title="Sửa từ tiếng Trung bên trái và nghĩa tiếng Việt"
+                        >
+                          <Edit2 size={13} />
+                        </button>
+                      )}
+
+                      {activeTab !== 'phienam' && (
+                        <button
+                          onClick={() => handleRequestDeleteItem(item.chinese)}
+                          className="p-1 text-neutral-400 hover:text-red-400 hover:bg-neutral-800 rounded cursor-pointer"
+                          title="Xóa mục này (kèm xác nhận)"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -943,6 +1105,53 @@ export const DictionaryView: React.FC = () => {
                 className="px-4 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold cursor-pointer shadow-sm"
               >
                 Lưu vào Từ Điển
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL XÁC NHẬN XÓA TỪ ĐIỂN TÙY BIẾN KÈM SỐ LƯỢNG */}
+      {deleteConfirmModal && deleteConfirmModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl bg-neutral-900 border border-neutral-800 p-5 text-neutral-100 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-800/60 text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-neutral-100">Xác Nhận Xóa Từ Điển</h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  {deleteConfirmModal.count > 1 ? `Xóa ${deleteConfirmModal.count} từ đã chọn` : 'Xóa 1 từ khỏi từ điển'}
+                </p>
+              </div>
+            </div>
+
+            <div className="text-xs text-neutral-300 leading-relaxed bg-neutral-950/80 p-3 rounded-xl border border-neutral-800">
+              {deleteConfirmModal.count === 1 ? (
+                <p>
+                  Bạn có chắc chắn muốn xóa từ <strong className="text-cyan-400 font-bold">"{deleteConfirmModal.sampleTitle}"</strong> khỏi từ điển không?
+                </p>
+              ) : (
+                <p>
+                  Bạn có chắc chắn muốn xóa toàn bộ <strong className="text-rose-400 font-bold">{deleteConfirmModal.count}</strong> từ đã chọn khỏi từ điển không? Thao tác này sẽ cập nhật cơ sở dữ liệu và không thể hoàn tác.
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+              <button
+                onClick={() => setDeleteConfirmModal(null)}
+                className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl text-xs font-medium transition-colors cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 size={13} />
+                <span>Xác nhận xóa {deleteConfirmModal.count > 1 ? `(${deleteConfirmModal.count})` : ''}</span>
               </button>
             </div>
           </div>

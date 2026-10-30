@@ -66,9 +66,11 @@ export interface NovelBook {
   coverUrl?: string;
   description?: string;
   genre?: string;
+  genres?: string[];
   filePath?: string;
   createdAt: number;
   updatedAt: number;
+  isFavorite?: boolean;
 }
 
 export const PRESET_COVERS = [
@@ -118,6 +120,7 @@ export interface AppSettings {
   capitalizeSentences: boolean;
   ttsRate: number;
   ttsPitch: number;
+  customTextColor?: string;
 }
 
 export interface ReadingStats {
@@ -185,6 +188,8 @@ interface AppContextType {
   
   // Thao tác xóa cụm từ chung
   deletePhrase: (chinese: string) => void;
+  updatePhrase: (oldChinese: string, newChinese: string, newViet: string, type: 'name' | 'vietphrase') => void;
+  deleteMultiplePhrases: (phrases: string[], type: 'name' | 'vietphrase' | 'ignored') => void;
   importEntriesBatch: (type: 'names' | 'vietphrase', entries: Array<{ chinese: string; vietnamese: string }>) => Promise<number>;
   isImportingLargeFile: boolean;
   importProgress: { count: number; percent: number } | null;
@@ -203,6 +208,7 @@ interface AppContextType {
   addNovel: (book: Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>) => string;
   updateNovel: (id: string, updates: Partial<NovelBook>) => void;
   deleteNovel: (id: string) => void;
+  toggleFavoriteNovel: (id: string) => void;
   
   // Library / Chương đã lưu
   savedChapters: SavedChapter[];
@@ -280,6 +286,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   capitalizeSentences: true,
   ttsRate: 1.0,
   ttsPitch: 1.0,
+  customTextColor: '',
 };
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -328,8 +335,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       try {
         const storedVp = await getStoredVietphrase();
-        if (isMounted && storedVp && Object.keys(storedVp).length > 0) {
+        if (isMounted && storedVp && Object.keys(storedVp).length > 5000) {
           setVietphraseMap(storedVp);
+        } else {
+          if (isMounted && storedVp && Object.keys(storedVp).length > 0) {
+            setVietphraseMap(storedVp);
+          }
+          // Tự động nạp bộ từ điển Vietphrase gốc 23.5MB vào IndexedDB trong nền
+          fetch('/assets/aistudio/Vietphrase_fc812333.txt')
+            .then(res => res.ok ? res.text() : fetch('/assets/aistudio/Vietphrase_cho_file_g_p_ef2c75e8.txt').then(r => r.text()))
+            .then(txt => {
+              const lines = txt.split(/\r?\n/);
+              const batch: Array<{ chinese: string; vietnamese: string }> = [];
+              const map: Record<string, string> = {};
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const eqIdx = line.indexOf('=');
+                if (eqIdx > 0) {
+                  const cn = line.slice(0, eqIdx).trim();
+                  const vn = line.slice(eqIdx + 1).trim();
+                  if (cn && vn) {
+                    batch.push({ chinese: cn, vietnamese: vn });
+                    map[cn] = vn;
+                  }
+                }
+              }
+              if (isMounted && Object.keys(map).length > 0) {
+                setVietphraseMap(prev => ({ ...prev, ...map }));
+                saveVietphraseBatch(batch).catch(console.error);
+              }
+            })
+            .catch(console.warn);
         }
       } catch (err) {
         console.error('Error loading vietphrase from IndexedDB', err);
@@ -636,6 +672,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const updatePhrase = (oldChinese: string, newChinese: string, newViet: string, type: 'name' | 'vietphrase') => {
+    const oldCn = oldChinese.trim();
+    const newCn = newChinese.trim();
+    const newVn = newViet.trim();
+    if (!newCn || !newVn) return;
+
+    if (type === 'name') {
+      const existing = namesList.find(n => n.chinese === oldCn);
+      if (oldCn !== newCn) {
+        deleteNameByChinese(oldCn).catch(console.error);
+      }
+      const newItem: NameItem = {
+        id: existing?.id || `name-${Date.now()}`,
+        chinese: newCn,
+        vietnamese: newVn,
+        category: existing?.category || 'Nhân vật',
+        note: existing?.note || '',
+        createdAt: Date.now(),
+      };
+      setNamesList(prev => {
+        const filtered = prev.filter(n => n.chinese !== oldCn && n.chinese !== newCn);
+        return [newItem, ...filtered];
+      });
+      saveNameItem(newItem).catch(console.error);
+    } else {
+      if (oldCn !== newCn) {
+        deleteVietphraseItem(oldCn).catch(console.error);
+      }
+      setVietphraseMap(prev => {
+        const next = { ...prev };
+        if (oldCn !== newCn) delete next[oldCn];
+        next[newCn] = newVn;
+        return next;
+      });
+      saveVietphraseItem(newCn, newVn).catch(console.error);
+    }
+  };
+
+  const deleteMultiplePhrases = (phrases: string[], type: 'name' | 'vietphrase' | 'ignored') => {
+    if (!phrases || phrases.length === 0) return;
+    const phraseSet = new Set(phrases.map(p => p.trim()));
+
+    if (type === 'name') {
+      phrases.forEach(cn => deleteNameByChinese(cn.trim()).catch(console.error));
+      setNamesList(prev => prev.filter(n => !phraseSet.has(n.chinese)));
+    } else if (type === 'vietphrase') {
+      phrases.forEach(cn => deleteVietphraseItem(cn.trim()).catch(console.error));
+      setVietphraseMap(prev => {
+        const next = { ...prev };
+        phrases.forEach(cn => delete next[cn.trim()]);
+        return next;
+      });
+    } else if (type === 'ignored') {
+      setIgnoredPhrasesList(prev => prev.filter(p => !phraseSet.has(p)));
+    }
+  };
+
   const importEntriesBatch = async (
     type: 'names' | 'vietphrase',
     entries: Array<{ chinese: string; vietnamese: string }>
@@ -878,30 +971,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Could not load asset Names.txt', err);
       }
 
-      onProgress?.('Đang đọc tệp Vietphrase cơ bản...', 85);
+      onProgress?.('Đang đọc tệp Vietphrase gốc (Vietphrase.txt 23.5MB chứa trọn bộ thành ngữ 4 chữ)...', 75);
       try {
-        const vpRes = await fetch('/assets/aistudio/Vietphrase_cho_file_g_p_ef2c75e8.txt');
+        let vpRes = await fetch('/assets/aistudio/Vietphrase_fc812333.txt');
+        if (!vpRes.ok) {
+          vpRes = await fetch('/assets/aistudio/Vietphrase_cho_file_g_p_ef2c75e8.txt');
+        }
         if (vpRes.ok) {
           const vpTxt = await vpRes.text();
           const lines = vpTxt.split(/\r?\n/);
           const batch: Array<{ chinese: string; vietnamese: string }> = [];
-          for (const line of lines) {
+          const mapUpdates: Record<string, string> = {};
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             const eqIdx = line.indexOf('=');
             if (eqIdx > 0) {
               const cn = line.slice(0, eqIdx).trim();
               const vn = line.slice(eqIdx + 1).trim();
-              if (cn && vn) batch.push({ chinese: cn, vietnamese: vn });
+              if (cn && vn) {
+                batch.push({ chinese: cn, vietnamese: vn });
+                mapUpdates[cn] = vn;
+              }
             }
           }
+          onProgress?.(`Đang ghi ${batch.length.toLocaleString()} mục Vietphrase vào IndexedDB...`, 90);
           await saveVietphraseBatch(batch);
-          setVietphraseMap(prev => {
-            const next = { ...prev };
-            for (const b of batch) next[b.chinese] = b.vietnamese;
-            return next;
-          });
+          setVietphraseMap(prev => ({ ...prev, ...mapUpdates }));
         }
       } catch (err) {
-        console.warn('Could not load Vietphrase_cho_file_g_p', err);
+        console.warn('Could not load Vietphrase_fc812333.txt', err);
       }
 
       onProgress?.('Hoàn tất nạp dữ liệu QuickTranslator!', 100);
@@ -1038,6 +1136,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSavedChapters(prev => prev.filter(chap => chap.novelId !== id));
   };
 
+  const toggleFavoriteNovel = (id: string) => {
+    setNovelsList(prev =>
+      prev.map(book =>
+        book.id === id ? { ...book, isFavorite: !book.isFavorite, updatedAt: Date.now() } : book
+      )
+    );
+  };
+
   // Saved Chapters handlers
   const saveChapter = (chapter: Omit<SavedChapter, 'id' | 'savedAt'>): string => {
     const id = `chap-${Date.now()}`;
@@ -1096,6 +1202,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ignoredPhrasesList,
         addIgnoredPhrase,
         deletePhrase,
+        updatePhrase,
+        deleteMultiplePhrases,
         importEntriesBatch,
         isImportingLargeFile,
         importProgress,
@@ -1110,6 +1218,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addNovel,
         updateNovel,
         deleteNovel,
+        toggleFavoriteNovel,
         savedChapters,
         saveChapter,
         deleteSavedChapter,

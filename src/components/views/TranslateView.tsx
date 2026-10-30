@@ -6,7 +6,7 @@
  * - Rút gọn các nút chế độ xem thành dạng ICON nhỏ gọn kèm tooltip giải thích.
  */
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useApp, parseChapterHeader, PRESET_COVERS } from '../../context/AppContext';
 import { 
   convertText, 
@@ -41,7 +41,16 @@ import {
   Check,
   Folder,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  Link2,
+  Unlink2,
+  Replace,
+  ChevronLeft,
+  ChevronRight,
+  Keyboard,
+  HelpCircle,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 export const TranslateView: React.FC = () => {
@@ -52,6 +61,7 @@ export const TranslateView: React.FC = () => {
     settings,
     novelsList,
     addNovel,
+    savedChapters,
     saveChapter,
     openInspectModal,
     activeRawText,
@@ -120,6 +130,7 @@ export const TranslateView: React.FC = () => {
     alternatives?: string[];
     chineseOriginal?: string;
     hanvietText?: string;
+    vietphraseText?: string;
   }>({ text: '', source: null, x: 0, y: 0, visible: false });
 
   // Tỷ lệ phần trăm chia giữa 2 khung Trung & Vietphrase (15% - 85%)
@@ -139,6 +150,32 @@ export const TranslateView: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const splitPaneRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chineseTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const vietphraseScrollRef = useRef<HTMLDivElement>(null);
+  const isScrollingRef = useRef<'chinese' | 'vietphrase' | null>(null);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cuộn đồng bộ hai chiều (Synchronized Scrolling)
+  const [isSyncScroll, setIsSyncScroll] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('ttv_sync_scroll') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+
+  // Tìm và thay thế nhanh trong chương
+  const [isFindReplaceOpen, setIsFindReplaceOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [replaceQuery, setReplaceQuery] = useState('');
+  const [saveToDictOnReplace, setSaveToDictOnReplace] = useState(true);
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+
+  // Tự động cuộn theo giọng đọc TTS (paragraph highlighting)
+  const [activeReadingParagraphIndex, setActiveReadingParagraphIndex] = useState<number | null>(null);
+
+  // Modal hướng dẫn phím tắt nhanh
+  const [isHotkeysModalOpen, setIsHotkeysModalOpen] = useState(false);
 
   // Theo dõi kích thước màn hình để xác định hướng kéo (ngang hay dọc)
   useEffect(() => {
@@ -243,6 +280,17 @@ export const TranslateView: React.FC = () => {
       })
       .join('\n\n');
   }, [translation, tokenOverrides]);
+
+  // Danh sách đoạn văn bản (paragraphs) đã áp dụng tokenOverrides dùng cho TTS tuần tự
+  const effectiveParagraphs = useMemo(() => {
+    return translation.paragraphs.map(p => {
+      if (viewMode === 'hanviet') return p.hanviet;
+      const words = p.tokens
+        .map(tok => tokenOverrides[tok.id] !== undefined ? tokenOverrides[tok.id] : tok.translated)
+        .filter(w => w !== '');
+      return cleanAndFormatSentence(words.join(' '));
+    });
+  }, [translation.paragraphs, viewMode, tokenOverrides]);
 
 
   const showToast = (msg: string, isError: boolean = false) => {
@@ -386,7 +434,7 @@ export const TranslateView: React.FC = () => {
     showToast('Đã xóa nội dung nhập.');
   };
 
-  // Handle TTS
+  // Handle TTS với cơ chế đọc tuần tự từng đoạn tránh bị ngắt 15s và tự động cuộn
   const handleToggleSpeech = () => {
     if (isSpeaking) {
       if (isPaused) {
@@ -397,10 +445,17 @@ export const TranslateView: React.FC = () => {
         setIsPaused(true);
       }
     } else {
-      const textToRead = viewMode === 'hanviet' ? translation.hanvietText : effectiveTranslationText;
-      if (!textToRead) return;
+      const parasToRead = effectiveParagraphs.length > 0 ? effectiveParagraphs : [effectiveTranslationText];
+      if (parasToRead.length === 0 || !parasToRead[0]) return;
 
-      speechService.speak(textToRead, settings.ttsRate, settings.ttsPitch, {
+      speechService.speakParagraphs(parasToRead, settings.ttsRate, settings.ttsPitch, {
+        onParagraphChange: (index) => {
+          setActiveReadingParagraphIndex(index);
+          const el = document.getElementById(`p-reader-${index}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        },
         onStart: () => {
           setIsSpeaking(true);
           setIsPaused(false);
@@ -408,10 +463,12 @@ export const TranslateView: React.FC = () => {
         onEnd: () => {
           setIsSpeaking(false);
           setIsPaused(false);
+          setActiveReadingParagraphIndex(null);
         },
         onError: () => {
           setIsSpeaking(false);
           setIsPaused(false);
+          setActiveReadingParagraphIndex(null);
         }
       });
     }
@@ -421,6 +478,7 @@ export const TranslateView: React.FC = () => {
     speechService.stop();
     setIsSpeaking(false);
     setIsPaused(false);
+    setActiveReadingParagraphIndex(null);
   };
 
   // Mở hộp thoại lưu chương thông minh vào Tủ Truyện
@@ -523,6 +581,244 @@ export const TranslateView: React.FC = () => {
     }
   };
 
+  // Cuộn đồng bộ hai chiều (Synchronized Scrolling) giữa ô tiếng Trung & Vietphrase
+  const handleChineseScroll = () => {
+    if (!isSyncScroll || isScrollingRef.current === 'vietphrase') return;
+    const textarea = chineseTextareaRef.current;
+    const reader = vietphraseScrollRef.current;
+    if (!textarea || !reader) return;
+
+    isScrollingRef.current = 'chinese';
+    const scrollMax = textarea.scrollHeight - textarea.clientHeight;
+    if (scrollMax > 0) {
+      const ratio = textarea.scrollTop / scrollMax;
+      reader.scrollTop = ratio * (reader.scrollHeight - reader.clientHeight);
+    }
+
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      isScrollingRef.current = null;
+    }, 80);
+  };
+
+  const handleVietphraseScroll = () => {
+    if (!isSyncScroll || isScrollingRef.current === 'chinese') return;
+    const textarea = chineseTextareaRef.current;
+    const reader = vietphraseScrollRef.current;
+    if (!textarea || !reader) return;
+
+    isScrollingRef.current = 'vietphrase';
+    const scrollMax = reader.scrollHeight - reader.clientHeight;
+    if (scrollMax > 0) {
+      const ratio = reader.scrollTop / scrollMax;
+      textarea.scrollTop = ratio * (textarea.scrollHeight - textarea.clientHeight);
+    }
+
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      isScrollingRef.current = null;
+    }, 80);
+  };
+
+  // Danh sách các chương đã lưu thuộc bộ truyện hiện tại
+  const currentNovelChapters = useMemo(() => {
+    if (!activeNovelId) return [];
+    return savedChapters
+      .filter(ch => ch.novelId === activeNovelId)
+      .sort((a, b) => a.savedAt - b.savedAt);
+  }, [savedChapters, activeNovelId]);
+
+  const currentChapterIndex = useMemo(() => {
+    if (currentNovelChapters.length === 0) return -1;
+    return currentNovelChapters.findIndex(
+      ch => ch.title === chapterTitle || ch.chapterName === chapterTitle || ch.chapterPrefix === chapterTitle
+    );
+  }, [currentNovelChapters, chapterTitle]);
+
+  const handlePrevChapter = useCallback(() => {
+    if (currentNovelChapters.length > 0 && currentChapterIndex > 0) {
+      const prevCh = currentNovelChapters[currentChapterIndex - 1];
+      setInputChinese(prevCh.originalText);
+      setChapterTitle(prevCh.title);
+      setActiveChapterTitle(prevCh.title);
+      setActiveRawText(prevCh.originalText);
+      setTokenOverrides({});
+      showToast(`Đã mở: ${prevCh.title}`);
+      return;
+    }
+
+    // Tự động nhận diện và giảm số chương nếu chưa lưu
+    const match = chapterTitle.match(/(Chương|第)\s*(\d+)/i);
+    if (match) {
+      const num = parseInt(match[2], 10);
+      if (num > 1) {
+        const newTitle = chapterTitle.replace(match[0], `${match[1]} ${num - 1}`);
+        setChapterTitle(newTitle);
+        setActiveChapterTitle(newTitle);
+        showToast(`Đã chuyển: ${newTitle}`);
+      } else {
+        showToast('Đây là chương đầu tiên', true);
+      }
+    } else {
+      showToast('Không có chương trước', true);
+    }
+  }, [currentNovelChapters, currentChapterIndex, chapterTitle, setActiveChapterTitle, setActiveRawText]);
+
+  const handleNextChapter = useCallback(() => {
+    if (currentNovelChapters.length > 0 && currentChapterIndex >= 0 && currentChapterIndex < currentNovelChapters.length - 1) {
+      const nextCh = currentNovelChapters[currentChapterIndex + 1];
+      setInputChinese(nextCh.originalText);
+      setChapterTitle(nextCh.title);
+      setActiveChapterTitle(nextCh.title);
+      setActiveRawText(nextCh.originalText);
+      setTokenOverrides({});
+      showToast(`Đã mở: ${nextCh.title}`);
+      return;
+    }
+
+    // Tự động tăng số chương
+    const match = chapterTitle.match(/(Chương|第)\s*(\d+)/i);
+    if (match) {
+      const num = parseInt(match[2], 10);
+      const newTitle = chapterTitle.replace(match[0], `${match[1]} ${num + 1}`);
+      setChapterTitle(newTitle);
+      setActiveChapterTitle(newTitle);
+      showToast(`Sẵn sàng cho: ${newTitle}`);
+    } else {
+      const newTitle = 'Chương 2';
+      setChapterTitle(newTitle);
+      setActiveChapterTitle(newTitle);
+      showToast(`Sẵn sàng cho: ${newTitle}`);
+    }
+  }, [currentNovelChapters, currentChapterIndex, chapterTitle, setActiveChapterTitle, setActiveRawText]);
+
+  // Tìm và thay thế
+  const findMatches = useMemo(() => {
+    if (!findQuery.trim()) return [];
+    const matches: number[] = [];
+    let pos = 0;
+    while ((pos = inputChinese.indexOf(findQuery, pos)) !== -1) {
+      matches.push(pos);
+      pos += findQuery.length || 1;
+    }
+    return matches;
+  }, [inputChinese, findQuery]);
+
+  const highlightChineseMatch = (startIndex: number, length: number) => {
+    const textarea = chineseTextareaRef.current;
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(startIndex, startIndex + length);
+      const lineCount = inputChinese.substring(0, startIndex).split('\n').length;
+      const totalLines = inputChinese.split('\n').length;
+      if (totalLines > 0) {
+        textarea.scrollTop = (lineCount / totalLines) * textarea.scrollHeight - textarea.clientHeight / 2;
+      }
+    }
+  };
+
+  const handleNextMatch = () => {
+    if (findMatches.length === 0) return;
+    const nextIdx = (currentMatchIndex + 1) % findMatches.length;
+    setCurrentMatchIndex(nextIdx);
+    highlightChineseMatch(findMatches[nextIdx], findQuery.length);
+  };
+
+  const handlePrevMatch = () => {
+    if (findMatches.length === 0) return;
+    const prevIdx = (currentMatchIndex - 1 + findMatches.length) % findMatches.length;
+    setCurrentMatchIndex(prevIdx);
+    highlightChineseMatch(findMatches[prevIdx], findQuery.length);
+  };
+
+  const handleReplaceOne = () => {
+    if (!findQuery.trim() || findMatches.length === 0) {
+      showToast('Không tìm thấy từ cần thay thế', true);
+      return;
+    }
+    const targetPos = findMatches[currentMatchIndex] ?? findMatches[0];
+    const newText = inputChinese.slice(0, targetPos) + replaceQuery + inputChinese.slice(targetPos + findQuery.length);
+    setInputChinese(newText);
+    setActiveRawText(newText);
+
+    if (saveToDictOnReplace && replaceQuery.trim()) {
+      addVietphrase(findQuery.trim(), replaceQuery.trim());
+    }
+    showToast(`Đã thay thế "${findQuery}"`);
+  };
+
+  const handleReplaceAll = () => {
+    if (!findQuery.trim()) {
+      showToast('Vui lòng nhập từ cần tìm', true);
+      return;
+    }
+    const count = findMatches.length;
+    if (count === 0) {
+      showToast('Không tìm thấy kết quả phù hợp', true);
+      return;
+    }
+    const newText = inputChinese.split(findQuery).join(replaceQuery);
+    setInputChinese(newText);
+    setActiveRawText(newText);
+
+    if (saveToDictOnReplace && replaceQuery.trim()) {
+      addVietphrase(findQuery.trim(), replaceQuery.trim());
+    }
+    showToast(`Đã thay thế tất cả ${count} vị trí`);
+  };
+
+  // Hệ thống phím tắt nhanh (Hotkeys)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const key = e.key.toLowerCase();
+        if (key === 's') {
+          e.preventDefault();
+          handleOpenSaveModal();
+        } else if (key === 'c') {
+          e.preventDefault();
+          handleCopyChapter();
+        } else if (key === 'r') {
+          e.preventDefault();
+          handleRefreshTranslation();
+        } else if (key === 'f') {
+          e.preventDefault();
+          setIsFindReplaceOpen(prev => !prev);
+        } else if (key === 'k') {
+          e.preventDefault();
+          setIsSyncScroll(prev => {
+            const next = !prev;
+            try { localStorage.setItem('ttv_sync_scroll', String(next)); } catch {}
+            showToast(next ? 'Đã bật cuộn đồng bộ' : 'Đã tắt cuộn đồng bộ');
+            return next;
+          });
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          handlePrevChapter();
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          handleNextChapter();
+        } else if (key === 'p') {
+          e.preventDefault();
+          handleToggleSpeech();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    handlePrevChapter, 
+    handleNextChapter, 
+    handleToggleSpeech,
+    inputChinese, 
+    chapterTitle, 
+    novelTitle, 
+    viewMode, 
+    translation, 
+    effectiveTranslationText
+  ]);
+
   // Chỉ gọi tra cứu khi click từ ở tiếng Trung
   const handleChineseTokenClick = (tok: TranslatedToken) => {
     if (tok.isPunctuation) return;
@@ -531,133 +827,192 @@ export const TranslateView: React.FC = () => {
 
   // Đồng bộ bôi đen hai chiều (Bidirectional Highlighting) & Nhận diện đa nghĩa
   const handleTextSelection = (source: 'chinese' | 'vietphrase') => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) {
-      setSelectionInfo(prev => ({ ...prev, visible: false }));
-      setSyncedTokenIds(new Set());
-      return;
+    const ta = chineseTextareaRef.current;
+    let selectedText = '';
+    let selStart = -1;
+    let selEnd = -1;
+    let rectX = window.innerWidth / 2;
+    let rectY = 100;
+
+    if (source === 'chinese' && ta && ta.selectionStart !== ta.selectionEnd) {
+      selStart = ta.selectionStart;
+      selEnd = ta.selectionEnd;
+      selectedText = ta.value.substring(selStart, selEnd).trim();
+      const taRect = ta.getBoundingClientRect();
+      rectX = Math.max(20, Math.min(window.innerWidth - 200, taRect.left + taRect.width / 2));
+      rectY = Math.max(70, taRect.top + 30);
+    } else {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) {
+        setSelectionInfo(prev => ({ ...prev, visible: false }));
+        setSyncedTokenIds(new Set());
+        return;
+      }
+      selectedText = selection.toString().trim();
+      if (selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        rectX = rect.left + rect.width / 2;
+        rectY = rect.top - 10;
+      }
     }
 
-    const selectedText = selection.toString().trim();
     if (!selectedText || selectedText.length < 1) {
       setSelectionInfo(prev => ({ ...prev, visible: false }));
       setSyncedTokenIds(new Set());
       return;
     }
 
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-
     // Tìm các token tương ứng với đoạn vừa bôi đen
     const matchedTokenIds = new Set<string>();
     let targetTok: TranslatedToken | undefined = undefined;
 
     if (source === 'vietphrase') {
-      // 1. Kiểm tra trực tiếp qua thuộc tính dataset.tokenId trên DOM
-      let targetTokenId: string | null = null;
-      let currNode: Node | null = selection.anchorNode;
-      while (currNode && currNode !== document.body) {
-        if (currNode instanceof HTMLElement && currNode.dataset && currNode.dataset.tokenId) {
-          targetTokenId = currNode.dataset.tokenId;
-          break;
-        }
-        currNode = currNode.parentNode;
-      }
-      if (!targetTokenId && selection.focusNode) {
-        currNode = selection.focusNode;
-        while (currNode && currNode !== document.body) {
-          if (currNode instanceof HTMLElement && currNode.dataset && currNode.dataset.tokenId) {
-            targetTokenId = currNode.dataset.tokenId;
-            break;
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        // 1. Quét các phần tử span[data-token-id] giao thoa TRỰC TIẾP với vùng bôi đen (selection range)
+        try {
+          const ancestor = range.commonAncestorContainer;
+          const containerEl = ancestor instanceof HTMLElement ? ancestor : ancestor.parentElement;
+          if (containerEl) {
+            const spans = containerEl.querySelectorAll<HTMLElement>('[data-token-id]');
+            spans.forEach(span => {
+              if (selection.containsNode(span, true)) {
+                const tId = span.dataset.tokenId;
+                if (tId) matchedTokenIds.add(tId);
+              }
+            });
           }
-          currNode = currNode.parentNode;
-        }
-      }
+        } catch {}
 
-      if (targetTokenId) {
-        matchedTokenIds.add(targetTokenId);
-        targetTok = translation.tokens.find(t => t.id === targetTokenId);
-      }
-
-      // 2. Quét các phần tử span mang data-token-id giao thoa với vùng bôi đen (selection)
-      try {
-        const allSpans = document.querySelectorAll<HTMLElement>('[data-token-id]');
-        allSpans.forEach(span => {
-          if (selection.containsNode(span, true)) {
-            const tId = span.dataset.tokenId;
-            if (tId) matchedTokenIds.add(tId);
+        // 2. Nếu selection nằm hoàn toàn bên trong 1 token duy nhất
+        if (matchedTokenIds.size === 0) {
+          let currNode: Node | null = selection.anchorNode;
+          while (currNode && currNode !== document.body) {
+            if (currNode instanceof HTMLElement && currNode.dataset && currNode.dataset.tokenId) {
+              matchedTokenIds.add(currNode.dataset.tokenId);
+              break;
+            }
+            currNode = currNode.parentNode;
           }
-        });
-      } catch {}
-
-      // 3. Tìm token khớp văn bản và highlight đồng bộ
-      const selLower = selectedText.toLowerCase();
-      translation.tokens.forEach(tok => {
-        if (!tok.isPunctuation && tok.translated) {
-          const currentVal = (tokenOverrides[tok.id] !== undefined ? tokenOverrides[tok.id] : tok.translated).toLowerCase();
-          if (selLower.includes(currentVal) || currentVal.includes(selLower)) {
-            matchedTokenIds.add(tok.id);
-            if (!targetTok && tok.alternatives && tok.alternatives.length > 1) {
-              targetTok = tok;
+          if (matchedTokenIds.size === 0 && selection.focusNode) {
+            currNode = selection.focusNode;
+            while (currNode && currNode !== document.body) {
+              if (currNode instanceof HTMLElement && currNode.dataset && currNode.dataset.tokenId) {
+                matchedTokenIds.add(currNode.dataset.tokenId);
+                break;
+              }
+              currNode = currNode.parentNode;
             }
           }
         }
-      });
+      }
 
-      if (!targetTok && matchedTokenIds.size > 0) {
+      // 3. Fallback: Nếu không có thẻ span nào bắt được
+      if (matchedTokenIds.size === 0) {
+        const cleanSel = selectedText.trim().toLowerCase().replace(/\s+/g, ' ');
+        for (let i = 0; i < translation.tokens.length; i++) {
+          let accum = '';
+          const candidateGroup: string[] = [];
+          for (let j = i; j < Math.min(i + 8, translation.tokens.length); j++) {
+            const tok = translation.tokens[j];
+            if (tok.isPunctuation) continue;
+            const currentVal = (tokenOverrides[tok.id] !== undefined ? tokenOverrides[tok.id] : tok.translated).trim().toLowerCase();
+            accum = accum ? `${accum} ${currentVal}` : currentVal;
+            candidateGroup.push(tok.id);
+            if (accum === cleanSel || accum.replace(/\s+/g, '') === cleanSel.replace(/\s+/g, '')) {
+              candidateGroup.forEach(id => matchedTokenIds.add(id));
+              break;
+            }
+          }
+          if (matchedTokenIds.size > 0) break;
+        }
+      }
+
+      if (matchedTokenIds.size > 0) {
         const firstId = Array.from(matchedTokenIds)[0];
         targetTok = translation.tokens.find(t => t.id === firstId);
+
+        // ĐỒNG BỘ 2 CHIỀU: Tự động bôi đen chính xác chữ Hán trong ô tiếng Trung!
+        const ordered = translation.tokens.filter(t => matchedTokenIds.has(t.id));
+        const starts = ordered.map(t => t.charStart).filter((n): n is number => n !== undefined);
+        const ends = ordered.map(t => t.charEnd).filter((n): n is number => n !== undefined);
+        if (starts.length > 0 && ends.length > 0 && chineseTextareaRef.current) {
+          const minS = Math.min(...starts);
+          const maxE = Math.max(...ends);
+          chineseTextareaRef.current.focus();
+          chineseTextareaRef.current.setSelectionRange(minS, maxE);
+        }
       }
     } else {
-      // Người dùng bôi đen ở tiếng Trung -> tìm token gốc tương ứng
-      translation.tokens.forEach(tok => {
-        if (!tok.isPunctuation && tok.original) {
-          if (selectedText.includes(tok.original) || tok.original.includes(selectedText)) {
-            matchedTokenIds.add(tok.id);
-            if (!targetTok) {
-              targetTok = tok;
+      // Người dùng bôi đen ở tiếng Trung:
+      if (selStart !== -1 && selEnd !== -1) {
+        // Khớp chuẩn xác theo vị trí ký tự charStart / charEnd trong ô soạn thảo!
+        for (const tok of translation.tokens) {
+          if (tok.charStart !== undefined && tok.charEnd !== undefined) {
+            if (tok.charStart < selEnd && tok.charEnd > selStart) {
+              matchedTokenIds.add(tok.id);
+              if (!targetTok && !tok.isPunctuation) {
+                targetTok = tok;
+              }
             }
           }
         }
-      });
+      }
+
+      // Fallback theo chuỗi ký tự liền kề
+      if (matchedTokenIds.size === 0) {
+        const cleanCn = selectedText.trim().replace(/\s+/g, '');
+        for (let i = 0; i < translation.tokens.length; i++) {
+          let accum = '';
+          const candidateGroup: string[] = [];
+          for (let j = i; j < Math.min(i + 10, translation.tokens.length); j++) {
+            const tok = translation.tokens[j];
+            accum += tok.original;
+            candidateGroup.push(tok.id);
+            if (accum === cleanCn) {
+              candidateGroup.forEach(id => matchedTokenIds.add(id));
+              targetTok = translation.tokens[i];
+              break;
+            }
+          }
+          if (matchedTokenIds.size > 0) break;
+        }
+      }
     }
 
     setSyncedTokenIds(matchedTokenIds);
 
-    // Trích xuất chữ Hán gốc tương ứng và tên Hán Việt viết hoa
+    // Trích xuất chữ Hán gốc tương ứng, nghĩa Vietphrase và tên Hán Việt viết hoa
     const orderedMatched = translation.tokens.filter(t => matchedTokenIds.has(t.id));
     let derivedChinese = '';
     let derivedHanviet = '';
+    let derivedVietphrase = '';
 
-    if (source === 'vietphrase') {
-      if (orderedMatched.length > 0) {
-        derivedChinese = orderedMatched.map(t => t.original).join('');
-        derivedHanviet = orderedMatched
-          .map(t => {
-            if (t.hanviet) {
-              return t.hanviet
-                .trim()
-                .split(/\s+/)
-                .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-                .join(' ');
-            }
-            return '';
-          })
-          .filter(Boolean)
-          .join(' ');
-      } else if (targetTok) {
-        derivedChinese = targetTok.original;
-        derivedHanviet = targetTok.hanviet
-          ? targetTok.hanviet
+    if (orderedMatched.length > 0) {
+      derivedChinese = orderedMatched.map(t => t.original).join('');
+      derivedVietphrase = orderedMatched
+        .map(t => (tokenOverrides[t.id] !== undefined ? tokenOverrides[t.id] : t.translated).trim())
+        .filter(Boolean)
+        .join(' ');
+      derivedHanviet = orderedMatched
+        .map(t => {
+          if (t.hanviet) {
+            return t.hanviet
               .trim()
               .split(/\s+/)
               .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-              .join(' ')
-          : '';
-      }
+              .join(' ');
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join(' ');
     } else {
       derivedChinese = selectedText;
       const lookup = inspectChinesePhrase(selectedText, namesList, vietphraseMap);
+      derivedVietphrase = lookup.existingVp || lookup.suggestedVietnamese || '';
       derivedHanviet = lookup.hanviet
         ? lookup.hanviet
             .trim()
@@ -679,13 +1034,14 @@ export const TranslateView: React.FC = () => {
     setSelectionInfo({
       text: selectedText,
       source,
-      x: rect.left + rect.width / 2,
-      y: rect.top - 10,
+      x: rectX,
+      y: rectY,
       visible: true,
       targetToken: targetTok,
       alternatives: availableAlternatives,
       chineseOriginal: derivedChinese || undefined,
       hanvietText: derivedHanviet || undefined,
+      vietphraseText: derivedVietphrase || undefined,
     });
   };
 
@@ -766,21 +1122,24 @@ export const TranslateView: React.FC = () => {
       default:
         return {
           bg: 'bg-[#121212]',
-          text: 'text-[#e1e1e1]',
+          text: 'text-[#f4f4f5]',
           subtext: 'text-neutral-400',
           border: 'border-[#2e2e2e]',
-          card: 'bg-[#1e1e1e] border-[#2e2e2e] text-[#e1e1e1]',
-          bar: 'bg-[#1e1e1e] border-[#2e2e2e] text-[#e1e1e1]',
-          btn: 'bg-[#252525] hover:bg-[#2d2d2d] text-[#e1e1e1] border-[#383838]',
-          pText: 'text-[#e1e1e1]',
+          card: 'bg-[#1e1e1e] border-[#2e2e2e] text-[#f4f4f5]',
+          bar: 'bg-[#1e1e1e] border-[#2e2e2e] text-[#f4f4f5]',
+          btn: 'bg-[#252525] hover:bg-[#2d2d2d] text-[#f4f4f5] border-[#383838]',
+          pText: 'text-[#f4f4f5]',
         };
     }
   }, [settings.theme]);
 
+  const isLight = settings.theme === 'light';
+  const isSepia = settings.theme === 'sepia';
+
   return (
     <div 
       ref={containerRef}
-      className="flex-1 flex flex-col h-full overflow-hidden bg-neutral-950 text-neutral-100 relative"
+      className={`flex-1 flex flex-col h-full overflow-hidden relative transition-colors duration-150 ${readerThemeClasses.bg} ${readerThemeClasses.text}`}
     >
       {/* Hidden File Input for .txt and .docx */}
       <input
@@ -864,7 +1223,8 @@ export const TranslateView: React.FC = () => {
             <button
               onClick={() => {
                 const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
-                const targetVn = selectionInfo.hanvietText || (selectionInfo.source === 'vietphrase' ? selectionInfo.text : '');
+                const cleanVn = selectionInfo.source === 'vietphrase' ? selectionInfo.text.replace(/\s+/g, ' ').trim() : '';
+                const targetVn = cleanVn || selectionInfo.hanvietText || selectionInfo.vietphraseText || '';
                 openInspectModal(targetCn, targetVn, 'Nhân vật');
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
@@ -878,7 +1238,10 @@ export const TranslateView: React.FC = () => {
             <button
               onClick={() => {
                 const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
-                const targetVn = selectionInfo.source === 'vietphrase' ? selectionInfo.text.toLowerCase() : '';
+                const cleanVn = selectionInfo.source === 'vietphrase' 
+                  ? selectionInfo.text.replace(/\s+/g, ' ').trim() 
+                  : (selectionInfo.vietphraseText || '');
+                const targetVn = cleanVn.toLowerCase();
                 openInspectModal(targetCn, targetVn, 'Khác');
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
@@ -933,7 +1296,7 @@ export const TranslateView: React.FC = () => {
       )}
 
       {/* Top Controls Bar - Toàn bộ các nút dạng ICON siêu nhỏ gọn */}
-      <div className="shrink-0 p-2.5 px-3 bg-neutral-900 border-b border-neutral-800 flex items-center justify-between gap-2 text-xs">
+      <div className={`shrink-0 p-2.5 px-3 border-b flex items-center justify-between gap-2 text-xs transition-colors ${readerThemeClasses.bar}`}>
         {/* Nhóm 1: 6 nút chức năng (Mở file, Dán, Copy, Làm mới, Tải file, Xóa) */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <button
@@ -996,6 +1359,84 @@ export const TranslateView: React.FC = () => {
           >
             <Trash2 size={14} />
           </button>
+
+          {/* Nút Tìm và thay thế nhanh */}
+          <button
+            onClick={() => setIsFindReplaceOpen(v => !v)}
+            className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all shadow-2xs group ${
+              isFindReplaceOpen 
+                ? 'bg-cyan-600 text-white border-cyan-500 shadow-cyan-900/30' 
+                : 'bg-neutral-800 text-neutral-300 border-neutral-700 hover:bg-neutral-700 hover:text-white'
+            }`}
+            title="Tìm & Thay thế nhanh trong chương (Alt+F)"
+            aria-label="Tìm và thay thế"
+          >
+            <Replace size={15} />
+          </button>
+
+          {/* Nút Cuộn đồng bộ hai chiều */}
+          <button
+            onClick={() => {
+              setIsSyncScroll(prev => {
+                const next = !prev;
+                try { localStorage.setItem('ttv_sync_scroll', String(next)); } catch {}
+                showToast(next ? 'Đã bật cuộn đồng bộ' : 'Đã tắt cuộn đồng bộ');
+                return next;
+              });
+            }}
+            className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all shadow-2xs group ${
+              isSyncScroll
+                ? 'bg-cyan-600/20 text-cyan-400 border-cyan-500/50 hover:bg-cyan-600/30'
+                : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-neutral-200'
+            }`}
+            title={isSyncScroll ? "Cuộn đồng bộ 2 khung: BẬT (Alt+K)" : "Cuộn đồng bộ 2 khung: TẮT (Alt+K)"}
+            aria-label="Cuộn đồng bộ"
+          >
+            {isSyncScroll ? <Link2 size={15} /> : <Unlink2 size={15} />}
+          </button>
+
+          {/* Nút Hướng dẫn phím tắt */}
+          <button
+            onClick={() => setIsHotkeysModalOpen(true)}
+            className="w-8 h-8 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-neutral-200 border border-neutral-700 flex items-center justify-center transition-all shadow-2xs"
+            title="Phím tắt nhanh (Hotkeys)"
+            aria-label="Phím tắt nhanh"
+          >
+            <Keyboard size={15} />
+          </button>
+        </div>
+
+        {/* Chuyển chương trước / tiếp */}
+        <div className="flex items-center gap-1 bg-neutral-900/90 border border-neutral-800 rounded-lg p-0.5 px-1 shadow-2xs">
+          <button
+            onClick={handlePrevChapter}
+            className="p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-cyan-400 transition-colors"
+            title="Chương trước (Alt+←)"
+            aria-label="Chương trước"
+          >
+            <ChevronLeft size={16} />
+          </button>
+
+          <div className="text-[11px] font-medium px-1.5 py-0.5 text-neutral-300 max-w-[120px] sm:max-w-[180px] truncate select-none text-center">
+            {currentNovelChapters.length > 0 && currentChapterIndex >= 0 ? (
+              <span title={chapterTitle}>
+                Chương {currentChapterIndex + 1}/{currentNovelChapters.length}
+              </span>
+            ) : (
+              <span title={chapterTitle || 'Chương'}>
+                {chapterTitle ? (chapterTitle.length > 15 ? chapterTitle.slice(0, 15) + '...' : chapterTitle) : 'Chương'}
+              </span>
+            )}
+          </div>
+
+          <button
+            onClick={handleNextChapter}
+            className="p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-cyan-400 transition-colors"
+            title="Chương tiếp theo (Alt+→)"
+            aria-label="Chương tiếp"
+          >
+            <ChevronRight size={16} />
+          </button>
         </div>
 
         {/* Nhóm 2: 3 nút chế độ xem rút gọn thành ICON nhỏ gọn kèm tooltip khi giữ/rê chuột */}
@@ -1044,6 +1485,96 @@ export const TranslateView: React.FC = () => {
         </div>
       </div>
 
+      {/* Find & Replace Collapsible Panel */}
+      {isFindReplaceOpen && (
+        <div className="p-2.5 px-4 bg-neutral-900 border-b border-neutral-800 flex flex-wrap items-center justify-between gap-2.5 text-xs animate-in slide-in-from-top-1 duration-150 shadow-md">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Find Input */}
+            <div className="flex items-center gap-1.5 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1">
+              <Search size={14} className="text-neutral-500" />
+              <input
+                type="text"
+                placeholder="Tìm từ/tiếng Trung..."
+                value={findQuery}
+                onChange={(e) => {
+                  setFindQuery(e.target.value);
+                  setCurrentMatchIndex(0);
+                }}
+                className="bg-transparent text-neutral-200 placeholder-neutral-500 outline-none text-xs w-32 sm:w-44"
+              />
+              {findQuery && (
+                <span className="text-[10px] text-neutral-400 px-1 font-mono">
+                  {findMatches.length > 0 ? `${currentMatchIndex + 1}/${findMatches.length}` : '0'}
+                </span>
+              )}
+              <button
+                onClick={handlePrevMatch}
+                disabled={findMatches.length === 0}
+                className="p-0.5 text-neutral-400 hover:text-white disabled:opacity-30"
+                title="Vị trí trước"
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <button
+                onClick={handleNextMatch}
+                disabled={findMatches.length === 0}
+                className="p-0.5 text-neutral-400 hover:text-white disabled:opacity-30"
+                title="Vị trí tiếp"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+
+            {/* Replace Input */}
+            <div className="flex items-center gap-1.5 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1">
+              <Replace size={14} className="text-neutral-500" />
+              <input
+                type="text"
+                placeholder="Thay thế bằng..."
+                value={replaceQuery}
+                onChange={(e) => setReplaceQuery(e.target.value)}
+                className="bg-transparent text-neutral-200 placeholder-neutral-500 outline-none text-xs w-32 sm:w-44"
+              />
+            </div>
+
+            {/* Action Buttons */}
+            <button
+              onClick={handleReplaceOne}
+              className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 transition-colors font-medium"
+            >
+              Thay thế
+            </button>
+            <button
+              onClick={handleReplaceAll}
+              className="px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white transition-colors font-medium shadow-2xs"
+            >
+              Thay tất cả
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* Option to save to Vietphrase dictionary */}
+            <label className="flex items-center gap-1.5 cursor-pointer text-neutral-400 hover:text-neutral-200 select-none">
+              <input
+                type="checkbox"
+                checked={saveToDictOnReplace}
+                onChange={(e) => setSaveToDictOnReplace(e.target.checked)}
+                className="rounded border-neutral-700 bg-neutral-950 text-cyan-500 focus:ring-0 w-3.5 h-3.5"
+              />
+              <span className="text-[11px]">Lưu vào từ điển Vietphrase</span>
+            </label>
+
+            <button
+              onClick={() => setIsFindReplaceOpen(false)}
+              className="p-1 text-neutral-400 hover:text-white rounded-md hover:bg-neutral-800"
+              title="Đóng thanh tìm kiếm"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Workspace Split (Input & Reader) với thanh kéo thả điều chỉnh kích thước */}
       <div 
         ref={splitPaneRef} 
@@ -1053,66 +1584,50 @@ export const TranslateView: React.FC = () => {
       >
         {/* Left / Top: Khung Trung */}
         {!isReadingMode && (
-          <div 
-            style={{
-              width: isMdScreen ? `${splitPercent}%` : '100%',
-              height: !isMdScreen ? `${splitPercent}%` : '100%',
-            }}
-            className="shrink-0 flex flex-col bg-neutral-900/60 overflow-hidden"
-          >
-            <div className="p-2.5 px-3 bg-neutral-900/90 border-b border-neutral-800/80 flex items-center justify-between text-xs text-neutral-400">
-              <span className="font-medium text-neutral-200">Trung</span>
-              <span className="font-mono text-[11px] text-neutral-500">
+           <div 
+             style={{
+               width: isMdScreen ? `${splitPercent}%` : '100%',
+               height: !isMdScreen ? `${splitPercent}%` : '100%',
+             }}
+             className={`shrink-0 flex flex-col overflow-hidden transition-colors ${
+               isLight ? 'bg-neutral-50/90 border-r border-slate-200' : isSepia ? 'bg-[#f4e6ca]/90 border-r border-[#dfcfa8]' : 'bg-neutral-900/60'
+             }`}
+           >
+            <div className={`p-2 px-3 border-b flex items-center justify-between text-xs transition-colors ${
+              isLight ? 'bg-neutral-100/90 border-slate-200 text-neutral-600' : isSepia ? 'bg-[#ede0c8] border-[#dfcfa8] text-[#4a3525]' : 'bg-neutral-900/90 border-neutral-800/80 text-neutral-400'
+            }`}>
+              <div className="flex items-center gap-2">
+                <span className={`font-semibold ${isLight ? 'text-neutral-800' : isSepia ? 'text-[#3d2e1e]' : 'text-neutral-200'}`}>Tiếng Trung</span>
+                <span className="text-[11px] opacity-60 font-normal hidden sm:inline">(Soạn thảo tự do &amp; bôi đen để tra/thêm từ)</span>
+              </div>
+              <span className="font-mono text-[11px] opacity-60">
                 {inputChinese.length.toLocaleString()} ký tự
               </span>
             </div>
 
-            {/* Vùng hiển thị token tiếng Trung tương tác có đồng bộ bôi đen hai chiều */}
-            <div 
-              onMouseUp={() => handleTextSelection('chinese')}
-              onTouchEnd={() => handleTextSelection('chinese')}
-              className="flex-1 p-3 overflow-y-auto font-serif text-sm leading-relaxed select-text space-y-2 bg-transparent"
-            >
-              {translation.paragraphs.length > 0 && inputChinese.trim() ? (
-                translation.paragraphs.map((p, pIdx) => (
-                  <p key={pIdx} className="text-neutral-300">
-                    {p.tokens.map(tok => {
-                      const isSynced = syncedTokenIds.has(tok.id);
-                      if (tok.isPunctuation) {
-                        return <span key={tok.id}>{tok.original}</span>;
-                      }
-
-                      return (
-                        <span
-                          key={tok.id}
-                          onClick={() => handleChineseTokenClick(tok)}
-                          className={`cursor-pointer px-0.5 rounded-xs transition-colors ${
-                            isSynced 
-                              ? 'bg-cyan-500/40 text-cyan-100 ring-1 ring-cyan-400' 
-                              : tok.isName 
-                                ? 'text-cyan-400 font-medium hover:bg-neutral-800' 
-                                : 'hover:bg-neutral-800 text-neutral-200'
-                          }`}
-                          title={`[Tiếng Trung] Dịch: ${tok.translated} | HV: ${tok.hanviet} | Bấm để tra/thêm Name`}
-                        >
-                          {tok.original}
-                        </span>
-                      );
-                    })}
-                  </p>
-                ))
-              ) : (
-                <textarea
-                  value={inputChinese}
-                  onChange={(e) => {
-                    setInputChinese(e.target.value);
-                    setActiveRawText(e.target.value);
-                  }}
-                  onSelect={() => handleTextSelection('chinese')}
-                  placeholder="Dán văn bản tiếng Trung hoặc mở file .txt, .docx ở nút trên cùng... Bôi đen bất kỳ cụm từ nào để tạo Name hoặc Vietphrase!"
-                  className="w-full h-full p-0 bg-transparent text-neutral-200 placeholder-neutral-600 font-serif text-sm resize-none focus:outline-none focus:ring-0 leading-relaxed"
-                />
-              )}
+            {/* Vùng soạn thảo tiếng Trung tự do */}
+            <div className="flex-1 flex flex-col overflow-hidden bg-transparent">
+              <textarea
+                ref={chineseTextareaRef}
+                value={inputChinese}
+                onChange={(e) => {
+                  setInputChinese(e.target.value);
+                  setActiveRawText(e.target.value);
+                }}
+                onScroll={handleChineseScroll}
+                onSelect={() => handleTextSelection('chinese')}
+                onMouseUp={() => handleTextSelection('chinese')}
+                onTouchEnd={() => handleTextSelection('chinese')}
+                onKeyUp={(e) => {
+                  if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
+                    handleTextSelection('chinese');
+                  }
+                }}
+                placeholder="Nhập hoặc dán văn bản tiếng Trung vào đây... Bạn có thể gõ, thêm, xóa văn bản như bình thường!"
+                className={`flex-1 w-full h-full p-3 bg-transparent font-serif text-sm resize-none focus:outline-none focus:ring-0 leading-relaxed font-normal ${
+                  isLight ? 'text-neutral-900 placeholder-neutral-400' : isSepia ? 'text-[#3d2e1e] placeholder-[#a69279]' : 'text-neutral-200 placeholder-neutral-600'
+                }`}
+              />
             </div>
           </div>
         )}
@@ -1209,7 +1724,11 @@ export const TranslateView: React.FC = () => {
           </div>
 
           {/* Reader Content Body */}
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+          <div 
+            ref={vietphraseScrollRef}
+            onScroll={handleVietphraseScroll}
+            className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"
+          >
             {translation.paragraphs.length === 0 || !inputChinese.trim() ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-8 text-neutral-500">
                 <FileText size={36} className="mb-2 text-neutral-600 stroke-[1.5]" />
@@ -1222,7 +1741,23 @@ export const TranslateView: React.FC = () => {
               // Song Song view: Two-column / aligned paragraphs
               <div className="space-y-6">
                 {translation.paragraphs.map((p, idx) => (
-                  <div key={idx} className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 rounded-xl bg-neutral-900/50 border border-neutral-800/60">
+                  <div 
+                    key={idx} 
+                    id={`p-reader-${idx}`}
+                    className={`grid grid-cols-1 md:grid-cols-2 gap-3 p-3 rounded-xl border transition-all duration-300 ${
+                      activeReadingParagraphIndex === idx
+                        ? isLight 
+                          ? 'bg-cyan-50 border-cyan-400 ring-2 ring-cyan-200' 
+                          : isSepia 
+                            ? 'bg-[#edd9b8] border-amber-600 ring-2 ring-amber-300' 
+                            : 'bg-cyan-950/40 border-cyan-500 ring-2 ring-cyan-500/30'
+                        : isLight 
+                          ? 'bg-white border-slate-200' 
+                          : isSepia 
+                            ? 'bg-[#f4e6ca] border-[#dfcfa8]' 
+                            : 'bg-neutral-900/50 border-neutral-800/60'
+                    }`}
+                  >
                     <div className="font-serif text-sm text-neutral-400 leading-relaxed border-b md:border-b-0 md:border-r border-neutral-800 pb-2 md:pb-0 md:pr-3">
                       {p.tokens.map(tok => {
                         const isSynced = syncedTokenIds.has(tok.id);
@@ -1240,11 +1775,23 @@ export const TranslateView: React.FC = () => {
                       })}
                     </div>
                     <div 
-                      className={`${fontClass} text-neutral-100 leading-relaxed`}
-                      style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}
+                      className={`${fontClass} leading-relaxed`}
+                      style={{ 
+                        fontSize: `${settings.fontSize}px`, 
+                        lineHeight: settings.lineHeight,
+                        color: settings.customTextColor || undefined
+                      }}
                     >
                       {/* Ở phần Vietphrase: Không có sự kiện click mở popup */}
-                      {p.tokens.map(tok => renderPureReadingToken(tok, syncedTokenIds.has(tok.id), settings.theme, tokenOverrides[tok.id]))}
+                      {p.tokens.map((tok, tokIdx) => {
+                        const isPunc = tok.isPunctuation || [',', '.', '!', '?', ';', ':', ')', ']', '}', '”', '"', "'"].includes(tok.translated);
+                        return (
+                          <React.Fragment key={tok.id}>
+                            {tokIdx > 0 && !isPunc ? ' ' : null}
+                            {renderPureReadingToken(tok, syncedTokenIds.has(tok.id), settings.theme, tokenOverrides[tok.id], settings.customTextColor)}
+                          </React.Fragment>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -1261,33 +1808,42 @@ export const TranslateView: React.FC = () => {
                   </h2>
                 )}
 
-                {translation.paragraphs.map((p, pIdx) => (
-                  <p key={pIdx} className="text-neutral-300">
-                    {p.tokens.map(tok => {
-                      const isSynced = syncedTokenIds.has(tok.id);
-                      if (tok.isPunctuation) {
-                        return <span key={tok.id}>{tok.original}</span>;
-                      }
+                {translation.paragraphs.map((p, pIdx) => {
+                  const isCurrentReading = activeReadingParagraphIndex === pIdx;
+                  return (
+                    <p 
+                      key={pIdx} 
+                      id={`p-reader-${pIdx}`}
+                      className={`text-neutral-300 transition-all duration-300 ${
+                        isCurrentReading ? 'bg-cyan-950/40 border-l-4 border-cyan-400 pl-3 py-1.5 rounded-r-lg' : ''
+                      }`}
+                    >
+                      {p.tokens.map(tok => {
+                        const isSynced = syncedTokenIds.has(tok.id);
+                        if (tok.isPunctuation) {
+                          return <span key={tok.id}>{tok.original}</span>;
+                        }
 
-                      return (
-                        <span
-                          key={tok.id}
-                          onClick={() => handleChineseTokenClick(tok)}
-                          className={`cursor-pointer px-0.5 rounded-xs transition-colors ${
-                            isSynced 
-                              ? 'bg-cyan-500/40 text-cyan-100 ring-1 ring-cyan-400' 
-                              : tok.isName 
-                                ? 'text-cyan-400 font-medium hover:bg-neutral-800' 
-                                : 'hover:bg-neutral-800 text-neutral-200'
-                          }`}
-                          title={`Dịch: ${tok.translated} | HV: ${tok.hanviet} | Bấm để tra/thêm Name`}
-                        >
-                          {tok.original}
-                        </span>
-                      );
-                    })}
-                  </p>
-                ))}
+                        return (
+                          <span
+                            key={tok.id}
+                            onClick={() => handleChineseTokenClick(tok)}
+                            className={`cursor-pointer px-0.5 rounded-xs transition-colors ${
+                              isSynced 
+                                ? 'bg-cyan-500/40 text-cyan-100 ring-1 ring-cyan-400' 
+                                : tok.isName 
+                                  ? 'text-cyan-400 font-medium hover:bg-neutral-800' 
+                                  : 'hover:bg-neutral-800 text-neutral-200'
+                            }`}
+                            title={`Dịch: ${tok.translated} | HV: ${tok.hanviet} | Bấm để tra/thêm Name`}
+                          >
+                            {tok.original}
+                          </span>
+                        );
+                      })}
+                    </p>
+                  );
+                })}
               </div>
             ) : (
               // Vietphrase or Hanviet view
@@ -1308,14 +1864,38 @@ export const TranslateView: React.FC = () => {
                   </h2>
                 )}
 
-                {translation.paragraphs.map((p, pIdx) => (
-                  <p key={pIdx} className={readerThemeClasses.pText}>
-                    {viewMode === 'hanviet'
-                      ? p.hanviet
-                      // Ở phần Vietphrase: Không có sự kiện click mở popup
-                      : p.tokens.map(tok => renderPureReadingToken(tok, syncedTokenIds.has(tok.id), settings.theme, tokenOverrides[tok.id]))}
-                  </p>
-                ))}
+                {translation.paragraphs.map((p, pIdx) => {
+                  const isCurrentReading = activeReadingParagraphIndex === pIdx;
+                  return (
+                    <p 
+                      key={pIdx} 
+                      id={`p-reader-${pIdx}`}
+                      className={`${readerThemeClasses.pText} transition-all duration-300 ${
+                        isCurrentReading 
+                          ? isLight 
+                            ? 'bg-cyan-50/90 border-l-4 border-cyan-600 pl-3 py-1.5 rounded-r-lg ring-1 ring-cyan-200 shadow-xs' 
+                            : isSepia 
+                              ? 'bg-[#ecd7b0] border-l-4 border-amber-700 pl-3 py-1.5 rounded-r-lg ring-1 ring-amber-400/40 shadow-xs' 
+                              : 'bg-cyan-950/40 border-l-4 border-cyan-400 pl-3 py-1.5 rounded-r-lg ring-1 ring-cyan-500/30 shadow-xs'
+                          : ''
+                      }`}
+                      style={settings.customTextColor ? { color: settings.customTextColor } : undefined}
+                    >
+                      {viewMode === 'hanviet'
+                        ? p.hanviet
+                        // Ở phần Vietphrase: Không có sự kiện click mở popup
+                        : p.tokens.map((tok, tokIdx) => {
+                            const isPunc = tok.isPunctuation || [',', '.', '!', '?', ';', ':', ')', ']', '}', '”', '"', "'"].includes(tok.translated);
+                            return (
+                              <React.Fragment key={tok.id}>
+                                {tokIdx > 0 && !isPunc ? ' ' : null}
+                                {renderPureReadingToken(tok, syncedTokenIds.has(tok.id), settings.theme, tokenOverrides[tok.id], settings.customTextColor)}
+                              </React.Fragment>
+                            );
+                          })}
+                    </p>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1546,6 +2126,76 @@ export const TranslateView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal Hướng Dẫn Phím Tắt Nhanh (Hotkeys Guide) */}
+      {isHotkeysModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl p-5 text-neutral-100 flex flex-col gap-4">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-cyan-950/80 border border-cyan-800/60 text-cyan-400">
+                  <Keyboard size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-neutral-100">Phím Tắt Nhanh (Hotkeys)</h3>
+                  <p className="text-[11px] text-neutral-400">Thao tác dịch và duyệt chương siêu tốc</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsHotkeysModalOpen(false)}
+                className="p-1 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
+                title="Đóng"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2 py-1 text-xs">
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Lưu chương vào thư viện</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + S</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Sao chép bản dịch vào Clipboard</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + C</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Làm mới bản dịch</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + R</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Tìm & thay thế nhanh trong chương</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + F</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Bật / Tắt cuộn đồng bộ 2 khung</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + K</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Chuyển sang chương trước</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + ←</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Chuyển sang chương tiếp theo</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + →</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
+                <span className="text-neutral-300">Đọc / Tạm dừng giọng nói TTS</span>
+                <kbd className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-cyan-400 font-mono font-medium shadow-2xs">Alt + P</kbd>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-neutral-800">
+              <button
+                onClick={() => setIsHotkeysModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs transition-colors shadow-2xs"
+              >
+                Đã hiểu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1561,7 +2211,8 @@ function renderPureReadingToken(
   tok: TranslatedToken, 
   isSynced: boolean, 
   theme: string = 'dark',
-  overrideText?: string
+  overrideText?: string,
+  customTextColor?: string
 ) {
   const displayText = overrideText !== undefined ? overrideText : tok.translated;
 
@@ -1573,7 +2224,6 @@ function renderPureReadingToken(
     return <span key={tok.id} data-token-id={tok.id}>{displayText}</span>;
   }
 
-
   const isLightOrWarm = theme === 'light' || theme === 'sepia';
 
   // Nếu đang được đồng bộ bôi đen từ tiếng Trung
@@ -1582,33 +2232,37 @@ function renderPureReadingToken(
       <span
         key={tok.id}
         data-token-id={tok.id}
-        className="bg-cyan-500/35 text-cyan-900 font-semibold ring-1 ring-cyan-500/80 rounded-xs px-0.5 mx-0.5 transition-colors"
+        className="bg-cyan-500/35 text-cyan-200 font-semibold ring-1 ring-cyan-500/80 rounded-xs px-0.5 mx-0.5 transition-colors"
       >
         {displayText}
       </span>
     );
   }
 
-  // Tên riêng (Name) hiển thị trang nhã, không bắt click
+  // Tên riêng (Name)
   if (tok.isName) {
     return (
       <span
         key={tok.id}
         data-token-id={tok.id}
-        className={`font-semibold mx-0.5 ${isLightOrWarm ? 'text-cyan-700' : 'text-cyan-300'}`}
+        style={customTextColor ? { color: customTextColor } : undefined}
+        className={`font-semibold mx-0.5 ${!customTextColor ? (isLightOrWarm ? 'text-cyan-700' : 'text-cyan-300') : ''}`}
       >
         {displayText}
       </span>
     );
   }
 
-  // Custom Vietphrase (màu hổ phách)
+  // Custom Vietphrase (ĐÃ SỬA: Loại bỏ màu vàng amber-300 ép buộc gây lỗi chữ vàng nền tối)
   if (tok.isCustom) {
     return (
       <span
         key={tok.id}
         data-token-id={tok.id}
-        className={`font-medium mx-0.5 ${isLightOrWarm ? 'text-amber-800' : 'text-amber-300/90'}`}
+        style={customTextColor ? { color: customTextColor } : undefined}
+        className={`font-medium mx-0.5 border-b border-dotted border-cyan-500/40 ${
+          !customTextColor ? (isLightOrWarm ? 'text-neutral-900' : 'text-[#f4f4f5]') : ''
+        }`}
       >
         {displayText}
       </span>
@@ -1620,7 +2274,10 @@ function renderPureReadingToken(
     <span 
       key={tok.id} 
       data-token-id={tok.id}
-      className={`mx-0.2 ${overrideText !== undefined ? 'underline decoration-cyan-500/60 decoration-dotted underline-offset-2' : ''}`}
+      style={customTextColor ? { color: customTextColor } : undefined}
+      className={`mx-0.2 ${
+        !customTextColor ? (isLightOrWarm ? 'text-neutral-900' : 'text-[#f4f4f5]') : ''
+      } ${overrideText !== undefined ? 'underline decoration-cyan-500/60 decoration-dotted underline-offset-2' : ''}`}
       title={tok.alternatives && tok.alternatives.length > 1 ? `Có ${tok.alternatives.length} nghĩa (Bôi đen để đổi)` : undefined}
     >
       {displayText}

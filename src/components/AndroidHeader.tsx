@@ -244,6 +244,17 @@ export const AndroidHeader: React.FC = () => {
     },
   ];
 
+  const PRESET_TEXT_COLORS = [
+    { label: 'Mặc định', value: '', bg: 'bg-zinc-700' },
+    { label: 'Trắng tinh', value: '#ffffff', bg: 'bg-white' },
+    { label: 'Trắng dịu', value: '#e4e4e7', bg: 'bg-zinc-200' },
+    { label: 'Hổ phách', value: '#fde68a', bg: 'bg-amber-200' },
+    { label: 'Xanh lơ', value: '#a5f3fc', bg: 'bg-cyan-200' },
+    { label: 'Xanh lá', value: '#bbf7d0', bg: 'bg-emerald-200' },
+    { label: 'Sepia', value: '#43302b', bg: 'bg-[#43302b]' },
+    { label: 'Đen mun', value: '#18181b', bg: 'bg-zinc-900' },
+  ];
+
   return (
     <header className="shrink-0 bg-neutral-900 border-b border-neutral-800 text-neutral-200 select-none relative z-40">
       {/* Toast Notification */}
@@ -305,14 +316,13 @@ export const AndroidHeader: React.FC = () => {
             </button>
             <button
               onClick={() => handleSelectNav('batch', 'Dịch Nhiều Chương')}
-              className={`px-2.5 py-1 rounded-md transition-colors font-medium flex items-center gap-1.5 cursor-pointer ${
+              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
                 activeTab === 'batch'
                   ? 'bg-cyan-600 text-white font-semibold shadow-xs'
                   : 'text-neutral-300 hover:text-white hover:bg-neutral-800/60'
               }`}
               title="Dịch hàng loạt nhiều chương (tối ưu hóa cho PC)"
             >
-              <Files size={13} />
               <span>Dịch Nhiều Chương</span>
             </button>
             <button
@@ -324,16 +334,6 @@ export const AndroidHeader: React.FC = () => {
               }`}
             >
               Thư Viện
-            </button>
-            <button
-              onClick={() => handleSelectNav('dictionary', 'Từ Điển')}
-              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
-                activeTab === 'dictionary'
-                  ? 'bg-neutral-800 text-cyan-400 font-semibold'
-                  : 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
-              }`}
-            >
-              Từ Điển
             </button>
           </div>
         </div>
@@ -498,6 +498,64 @@ export const AndroidHeader: React.FC = () => {
                   {item.label}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* 4. Màu chữ đọc truyện (Bảng màu chọn sẵn + Chọn mã màu tùy ý) */}
+          <div className="pt-2 border-t border-zinc-800/80">
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1.5">
+              <span>Màu chữ đọc truyện:</span>
+              <span className="text-cyan-400 font-mono text-[11px]">
+                {settings.customTextColor || 'Theo chủ đề'}
+              </span>
+            </div>
+
+            {/* Bảng màu chọn sẵn */}
+            <div className="grid grid-cols-4 gap-1 mb-2">
+              {PRESET_TEXT_COLORS.map(c => {
+                const isSelected = (settings.customTextColor || '') === c.value;
+                return (
+                  <button
+                    key={c.label}
+                    onClick={() => updateSettings({ customTextColor: c.value })}
+                    className={`py-1 px-1 rounded-lg border text-[10.5px] flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-zinc-800 border-cyan-500 text-cyan-300 shadow-xs font-semibold'
+                        : 'bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                    }`}
+                    title={c.label}
+                  >
+                    <span className={`w-2.5 h-2.5 rounded-full border border-black/30 shrink-0 ${c.bg}`} />
+                    <span className="truncate">{c.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Bộ chọn mã màu tùy ý (HTML Color Picker) */}
+            <div className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-zinc-900/80 border border-zinc-800">
+              <span className="text-[11px] text-zinc-400">Mã màu tùy ý:</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="color"
+                  value={settings.customTextColor || '#ffffff'}
+                  onChange={(e) => updateSettings({ customTextColor: e.target.value })}
+                  className="w-6 h-6 rounded cursor-pointer border border-zinc-700 bg-transparent p-0"
+                  title="Chọn mã màu tùy chọn"
+                />
+                <span className="text-[11px] font-mono text-zinc-300 uppercase">
+                  {settings.customTextColor || 'Mặc định'}
+                </span>
+                {settings.customTextColor && (
+                  <button
+                    onClick={() => updateSettings({ customTextColor: '' })}
+                    className="p-0.5 text-zinc-500 hover:text-rose-400 rounded cursor-pointer"
+                    title="Đặt lại màu chữ mặc định theo chế độ giao diện"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
