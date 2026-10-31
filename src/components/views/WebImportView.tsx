@@ -5,6 +5,7 @@ import { analyzeWebPage, DEFAULT_EXTRACTION, extractWebChapter, loadWebPage, rea
 import { convertText } from '../../utils/translatorEngine';
 import { resolveTranslationStyle, type TranslationStyleChoice } from '../../utils/translationStyle';
 import { TranslationStyleSelect } from '../TranslationStyleSelect';
+import { isServerApiAvailable, serverApiUrl } from '../../utils/serverApi';
 
 type Draft = {
   url: string; title: string; author: string; description: string; language: string; filename: string; cover: string;
@@ -172,7 +173,7 @@ export function WebImportView() {
     try {
       let cover = draft.cover;
       if (cover && !cover.startsWith('data:')) {
-        const response = await fetch('/api/web-import/resource', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: cover, image: true }), signal: controller.signal });
+        const response = await fetch(serverApiUrl('/api/web-import/resource'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: cover, image: true }), signal: controller.signal });
         const result = await response.json();
         if (!response.ok) throw new Error(`Không tải được ảnh bìa: ${result.error}. Xóa hoặc tải ảnh bìa khác để tiếp tục.`);
         cover = result.image;
@@ -206,6 +207,7 @@ export function WebImportView() {
         <div><h1 className="flex items-center gap-2 text-lg font-semibold"><Globe size={20} />Truyện từ web</h1><p className="mt-1 text-sm text-muted">Lấy chương, kiểm tra nội dung và tạo sách EPUB của bạn.</p></div>
         <span className="text-xs text-muted">{storageError || 'Bản nháp tự lưu trên máy'}</span>
       </div>
+      {!isServerApiAvailable() && <p role="note" className="rounded-lg border border-line bg-raised/40 p-3 text-xs leading-relaxed text-muted">Trong APK, tải trang và ảnh bìa từ URL cần máy chủ API chưa được triển khai. Bạn vẫn có thể nhập HTML đã lưu trên máy hoặc dán nội dung chương để xử lý ngoại tuyến.</p>}
       <section className="space-y-3 rounded-xl border border-line bg-surface p-4">
         <label htmlFor="web-start" className="block text-sm font-medium">1. Trang truyện hoặc mục lục</label>
         <form onSubmit={event => { event.preventDefault(); if (!busy && draft.url.trim()) void analyze(); }} className="flex flex-wrap gap-2">

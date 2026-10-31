@@ -1,3 +1,5 @@
+import { serverApiUrl } from './serverApi';
+
 export type WebChapter = { id: string; url: string; title: string; selected: boolean; status: 'pending' | 'loading' | 'ready' | 'error'; content?: string; error?: string };
 export type ExtractionOptions = { links: string; content: string; remove: string };
 export const DEFAULT_EXTRACTION: ExtractionOptions = { links: '', content: '', remove: 'nav, header, footer, script, style, noscript, iframe, form, button, .ads, .advertisement, .navigation, .chapter-nav' };
@@ -6,7 +8,7 @@ export class WebImportError extends Error {
 }
 
 export async function loadWebPage(url: string, signal?: AbortSignal): Promise<{ url: string; html: string }> {
-  const response = await fetch('/api/web-import/resource', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }), signal });
+  const response = await fetch(serverApiUrl('/api/web-import/resource'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }), signal });
   if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('API tải web chưa hoạt động. Hãy khởi động lại máy chủ app.');
   const result = await response.json();
   if (!response.ok) throw new WebImportError(result.error || 'Không tải được trang.', result.code, result.sourceUrl);
