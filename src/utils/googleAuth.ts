@@ -1,3 +1,5 @@
+import { serverApiUrl } from './serverApi';
+
 export type Account = { isLoggedIn: boolean; id?: string; email: string; name: string; avatarUrl?: string };
 export type GoogleSignInApi = {
   initialize: (config: { client_id: string; nonce: string; auto_select: boolean; callback: (response: { credential: string }) => void }) => void;
@@ -7,7 +9,7 @@ export type GoogleSignInApi = {
 declare global { interface Window { google?: { accounts: { id: GoogleSignInApi } } } }
 
 export async function authRequest<T>(route: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api/auth/${route}`, {
+  const response = await fetch(serverApiUrl(`/api/auth/${route}`), {
     method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store',
     ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   });
