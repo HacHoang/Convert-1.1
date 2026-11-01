@@ -8,13 +8,14 @@ import { filterWebsiteNotices } from '../utils/paragraphFilters';
 import { SpeechTransport } from './SpeechTransport';
 import { VoiceSetupDialog } from './VoiceSetupDialog';
 import { ReaderEndGate } from '../utils/readerState';
+import { useReadingActivity } from '../hooks/useReadingActivity';
 import { DEFAULT_READER_PREFERENCES, orderReaderChapters, readerChapterBlocks, readReaderState, saveReadingPosition,
   stageReadingPosition, updateReaderState, shouldAdvanceReader, type ReaderPreferences, type ReaderState, type ReadingPosition } from '../utils/readerState';
 
 export function LibraryReader({ book, chapters: unsorted, initialChapterId, onClose, onEdit }: {
   book: NovelBook; chapters: SavedChapter[]; initialChapterId?: string; onClose: () => void; onEdit: (chapter: SavedChapter) => void;
 }) {
-  const { namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings } = useApp();
+  const { namesList, namesMainMap, phienAmMap, dictionaryStyleRevision, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings, readingStats, recordReadingActivity } = useApp();
   const chapters = useMemo(() => orderReaderChapters(unsorted), [unsorted]);
   const [chapterId, setChapterId] = useState('');
   const [state, setState] = useState<ReaderState>({ progress: {}, bookmarks: [], preferences: { ...DEFAULT_READER_PREFERENCES } });
@@ -70,10 +71,15 @@ export function LibraryReader({ book, chapters: unsorted, initialChapterId, onCl
     if (prefs.mode === 'original') return chapter.originalText;
     if (chapter.vietphraseText.trim()) return filterWebsiteNotices(chapter.vietphraseText);
     return convertText(chapter.originalText, namesList, vietphraseMap, { prioritizeNames: settings.prioritizeNames,
-      capitalizeSentences: settings.capitalizeSentences, customLuatNhan: luatNhanMap, customPronouns: pronounsMap,
+      capitalizeSentences: settings.capitalizeSentences, namesMainMap, customPhienAm: phienAmMap, customLuatNhan: luatNhanMap, customPronouns: pronounsMap,
       customIgnored: ignoredPhrasesList, style: resolveTranslationStyle(book.genres?.length ? book.genres : [book.genre || ''], book.translationStyle || 'auto') }).fullText;
-  }, [chapter, prefs.mode, namesList, vietphraseMap, settings.prioritizeNames, settings.capitalizeSentences, luatNhanMap, pronounsMap, ignoredPhrasesList, book]);
+  }, [chapter, prefs.mode, dictionaryStyleRevision, namesMainMap, phienAmMap, namesList, vietphraseMap, settings.prioritizeNames, settings.capitalizeSentences, luatNhanMap, pronounsMap, ignoredPhrasesList, book]);
   const paragraphs = useMemo(() => text.split(/\n+/).map(line => line.trim()).filter(Boolean), [text]);
+  useReadingActivity({ bookId: book.id, chapterId, epoch: readingStats.epoch, enabled: ready && !!text.trim() && !drawer && !showVoiceSetup,
+    record: recordReadingActivity, atEnd: () => {
+      const element = viewport.current;
+      return !!element && !restoring.current && (element.scrollHeight <= element.clientHeight + 8 || element.scrollTop / Math.max(1, element.scrollHeight - element.clientHeight) >= 0.9);
+    } });
   const restorePosition = () => {
     const element = viewport.current;
     if (!element) return;

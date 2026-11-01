@@ -1,5 +1,5 @@
 /**
- * Bộ từ điển Vietphrase gốc tích hợp sẵn của Convert
+ * Bộ từ điển Vietphrase gốc tích hợp sẵn của Hermes
  * Chứa hơn 500 cụm từ phổ biến nhất trong tiểu thuyết mạng Trung Quốc.
  */
 
@@ -284,4 +284,3 @@ export const DEFAULT_VIETPHRASE: Record<string, string> = {
   '呢': 'đâu/nhỉ/chứ/vậy',
   '啊': 'a/hả/ô',
 };
-

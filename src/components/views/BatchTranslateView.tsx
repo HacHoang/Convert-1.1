@@ -11,6 +11,7 @@ import type { NovelBook } from '../../context/AppContext';
 import { resolveTranslationStyle, type TranslationStyleChoice } from '../../utils/translationStyle';
 import { TranslationStyleSelect } from '../TranslationStyleSelect';
 import { chapterFileNames } from '../../utils/chapterFileNames';
+import { chapterIdsOutsidePositionRange } from '../../utils/chapterRange';
 /**
  * Màn hình Dịch hàng loạt nhiều chương (Batch Translation View)
  * Thiết kế tối ưu riêng cho giao diện máy tính / PC
@@ -51,7 +52,7 @@ const PAGE_SIZE = 50;
 
 export const BatchTranslateView: React.FC = () => {
   const {
-    namesList,
+    namesList, namesMainMap, phienAmMap, dictionaryStyleRevision,
     vietphraseMap,
     luatNhanMap,
     pronounsMap,
@@ -197,7 +198,7 @@ export const BatchTranslateView: React.FC = () => {
     const convTitle = convertText(item.rawTitle, translationNames, vietphraseMap, {
       prioritizeNames: translationNames !== namesList || settings.prioritizeNames,
       capitalizeSentences: settings.capitalizeSentences,
-      customLuatNhan: luatNhanMap,
+      namesMainMap, customPhienAm: phienAmMap, customLuatNhan: luatNhanMap,
       customPronouns: pronounsMap,
       style: translationStyle,
       customIgnored: ignoredPhrasesList,
@@ -206,7 +207,7 @@ export const BatchTranslateView: React.FC = () => {
     const convBody = convertText(item.content, translationNames, vietphraseMap, {
       prioritizeNames: translationNames !== namesList || settings.prioritizeNames,
       capitalizeSentences: settings.capitalizeSentences,
-      customLuatNhan: luatNhanMap,
+      namesMainMap, customPhienAm: phienAmMap, customLuatNhan: luatNhanMap,
       customPronouns: pronounsMap,
       style: translationStyle,
       customIgnored: ignoredPhrasesList,
@@ -551,9 +552,9 @@ export const BatchTranslateView: React.FC = () => {
           {/* Tên truyện & Thư viện */}
           <BatchSaveRange
             key={`${chapters.length}:${chapters[0]?.id || ''}:${reviewed}`}
-            numbers={chapters.map(chapter => chapter.chapterNum)}
+            totalChapters={chapters.length}
             disabled={!completedChapters.length || isTranslating || reviewBusy || saveBusy || isExporting}
-            onChange={(first, last) => setExcludedChapterIds(new Set(chapters.filter(chapter => chapter.chapterNum < first || chapter.chapterNum > last).map(chapter => chapter.id)))}
+            onChange={(first, last) => setExcludedChapterIds(new Set(chapterIdsOutsidePositionRange(chapters, first, last)))}
           />
           <div className="batch-book-fields flex min-w-0 flex-wrap items-center gap-2">
             {novelsList.length > 0 && (

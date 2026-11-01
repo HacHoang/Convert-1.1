@@ -1,4 +1,5 @@
 import { validReaderState, type ReaderState } from './readerState';
+import { validReadingStats } from './readingStats';
 import { STYLE_LABELS } from './translationStyle';
 import { LEGACY_BACKUP_APP } from './legacyCompatibility';
 import type { SavedChapter, NovelBook, AppSettings, ReadingStats } from '../context/AppContext';
@@ -7,8 +8,11 @@ import { DICTIONARY_STORES, STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRASE, STO
   STORE_PRONOUNS, STORE_IGNORED, STORE_PHIEN_AM } from './indexedDbStorage';
 
 export interface LibraryData { novelsList: NovelBook[]; savedChapters: SavedChapter[] }
+import { validMeaningStyles, type MeaningStyleData } from './meaningStyles';
 export interface BackupData {
-  app: 'Convert'; version: 3; exportedAt: string;
+  meaningStyles?: MeaningStyleData;
+  meaningStylesFallback?: 'neutral' | null;
+  app: 'Hermes'; version: 3; exportedAt: string;
   namesList?: NameItem[]; namesMainMap?: Record<string, string>; vietphraseMap?: Record<string, string>;
   luatNhanMap?: Record<string, string>; pronounsMap?: Record<string, string>;
   ignoredPhrasesList?: string[]; phienAmMap?: Record<string, string>;
@@ -25,7 +29,9 @@ export function parseBackup(text: string): BackupData {
   const raw: unknown = JSON.parse(text);
   if (!object(raw)) return fail();
   let data = raw;
-  if (raw.app === 'Convert' || raw.app === LEGACY_BACKUP_APP) {
+  if (data.meaningStyles !== undefined && !validMeaningStyles(data.meaningStyles)) return fail();
+  if (data.meaningStylesFallback !== undefined && data.meaningStylesFallback !== null && data.meaningStylesFallback !== 'neutral') return fail();
+  if (raw.app === 'Hermes' || raw.app === 'Convert' || raw.app === LEGACY_BACKUP_APP) {
     if (raw.version !== 3 && raw.version !== '2.6-offline') return fail();
   } else if (typeof raw.version === 'number' && raw.version >= 1 && raw.version <= 2 && 'namesCustom' in raw) {
     data = { namesList: raw.namesCustom, namesMainMap: raw.namesMain, vietphraseMap: raw.vietphrase,
@@ -68,10 +74,11 @@ export function parseBackup(text: string): BackupData {
   if (data.readingStats !== undefined && (!object(data.readingStats) ||
     !['totalReadBooks', 'totalReadMinutes'].every(k => typeof (data.readingStats as Record<string, unknown>)[k] === 'number' &&
       Number.isFinite((data.readingStats as Record<string, number>)[k]) && (data.readingStats as Record<string, number>)[k] >= 0))) return fail();
+  if (object(data.readingStats) && data.readingStats.version !== undefined && !validReadingStats(data.readingStats)) return fail();
   if (![...maps, 'namesList', 'ignoredPhrasesList', 'novelsList', 'savedChapters', 'settings', 'readingStats'].some(key => data[key] !== undefined)) return fail();
-  if (raw.version === 3 && (raw.app === 'Convert' || raw.app === LEGACY_BACKUP_APP) &&
+  if (raw.version === 3 && (raw.app === 'Hermes' || raw.app === 'Convert' || raw.app === LEGACY_BACKUP_APP) &&
     ![...maps, 'namesList', 'ignoredPhrasesList', 'novelsList', 'savedChapters', 'settings', 'readingStats'].every(key => data[key] !== undefined)) return fail();
-  return { ...data, app: 'Convert', version: 3, exportedAt: String(raw.exportedAt || '') } as BackupData;
+  return { ...data, app: 'Hermes', version: 3, exportedAt: String(raw.exportedAt || '') } as BackupData;
 }
 
 export function backupStores(data: BackupData): Record<string, unknown[]> {

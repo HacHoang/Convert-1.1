@@ -1,5 +1,5 @@
 /**
- * Convert Android Web Clone
+ * Hermes Android Web App
  * Chuyên dịch & convert tiểu thuyết Trung - Hán Việt - Vietphrase
  * Không yêu cầu đăng nhập, hoạt động hoàn toàn offline
  * Toàn bộ điều hướng nằm gọn trong nút Menu 3 gạch (Side Drawer) ở thanh trên
@@ -14,6 +14,7 @@ const BatchTranslateView = React.lazy(() => import('./components/views/BatchTran
 const LibraryView = React.lazy(() => import('./components/views/LibraryView').then(module => ({ default: module.LibraryView })));
 const DictionaryView = React.lazy(() => import('./components/views/DictionaryView').then(module => ({ default: module.DictionaryView })));
 const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
+import { BackgroundTasks } from './context/BackgroundTasks';
 import { WordInspectModal } from './components/WordInspectModal';
 const WebImportView = React.lazy(() => import('./components/views/WebImportView').then(module => ({ default: module.WebImportView })));
 
@@ -39,17 +40,19 @@ const MainLayout: React.FC = () => {
         }`}
       >
         {/* Top App Bar & Simulated Android Status Bar (Tích hợp Menu 3 gạch Side Drawer) */}
-        <AndroidHeader />
+        <BackgroundTasks>
+          <AndroidHeader />
 
-        {/* Tab View Container - Tràn toàn bộ chiều cao màn hình */}
-        <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
-          {activeTab === 'translate' && <TranslateView />}
-          {activeTab === 'batch' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><BatchTranslateView /></React.Suspense>}
-          {activeTab === 'web' && <React.Suspense fallback={<div className="p-4 text-sm text-muted">Đang mở Truyện từ web…</div>}><WebImportView /></React.Suspense>}
-          {activeTab === 'library' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><LibraryView /></React.Suspense>}
-          {activeTab === 'dictionary' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><DictionaryView /></React.Suspense>}
-          {activeTab === 'settings' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><SettingsView /></React.Suspense>}
-        </main>
+          {/* Tab View Container - Tràn toàn bộ chiều cao màn hình */}
+          <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+            {activeTab === 'translate' && <TranslateView />}
+            {activeTab === 'batch' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><BatchTranslateView /></React.Suspense>}
+            {activeTab === 'web' && <React.Suspense fallback={<div className="p-4 text-sm text-muted">Đang mở Truyện từ web…</div>}><WebImportView /></React.Suspense>}
+            {activeTab === 'library' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><LibraryView /></React.Suspense>}
+            {activeTab === 'dictionary' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><DictionaryView /></React.Suspense>}
+            {activeTab === 'settings' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><SettingsView /></React.Suspense>}
+          </main>
+        </BackgroundTasks>
       </div>
 
       {/* Word / Name Inspection & Editor Modal */}

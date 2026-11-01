@@ -13,12 +13,13 @@ export interface EpubOptions {
   lineHeight?: number;
   cover?: string;
 }
-export async function createNovelEpub(novel: Pick<NovelBook, 'title' | 'author' | 'description'>, chapters: SavedChapter[], options: EpubOptions = {}): Promise<Blob> {
+export async function createNovelEpub(novel: Pick<NovelBook, 'title' | 'author' | 'description' | 'originalTitle' | 'originalAuthor' | 'vietnameseTitle' | 'vietnameseAuthor'>, chapters: SavedChapter[], options: EpubOptions = {}): Promise<Blob> {
   if (!chapters.length) throw new Error('Truyện chưa có chương để xuất.');
   const { default: JSZip } = await import('jszip');
   const zip = new JSZip();
   const esc = escapeXml;
   const title = esc(novel.title || 'Truyện');
+  const alternatives = ([['book-title', novel.title, novel.originalTitle, 'zh'], ['book-title', novel.title, novel.vietnameseTitle, 'vi'], ['book-author', novel.author, novel.originalAuthor, 'zh'], ['book-author', novel.author, novel.vietnameseAuthor, 'vi']] as const).filter(([, primary, alternate]) => alternate?.trim() && alternate.trim() !== primary?.trim()).map(([id, , alternate, lang]) => `<meta refines="#${id}" property="alternate-script" xml:lang="${lang}">${esc(alternate!.trim())}</meta>`).join('');
   const uid = `urn:uuid:${crypto.randomUUID()}`;
   const ordered = options.preserveOrder ? [...chapters] : [...chapters].sort((a, b) => a.title.localeCompare(b.title, 'vi', { numeric: true }) || a.savedAt - b.savedAt);
   const language = esc(options.language || 'vi');
@@ -48,7 +49,7 @@ export async function createNovelEpub(novel: Pick<NovelBook, 'title' | 'author' 
     spine.push(`<itemref idref="ch${index + 1}"/>`);
   });
   zip.file('EPUB/nav.xhtml', xhtml(title, `<nav epub:type="toc" id="toc"><h1>${title}</h1><ol>${nav.join('')}</ol></nav>`));
-  zip.file('EPUB/book.opf', `<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="book-id">${uid}</dc:identifier><dc:title>${title}</dc:title><dc:language>${language}</dc:language><dc:creator>${esc(novel.author || 'Khuyết danh')}</dc:creator><dc:description>${esc(novel.description || '')}</dc:description><meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${manifest.join('')}</manifest><spine>${spine.join('')}</spine></package>`);
+  zip.file('EPUB/book.opf', `<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="book-id">${uid}</dc:identifier><dc:title id="book-title">${title}</dc:title><dc:language>${language}</dc:language><dc:creator id="book-author">${esc(novel.author || 'Khuyết danh')}</dc:creator>${alternatives}<dc:description>${esc(novel.description || '')}</dc:description><meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${manifest.join('')}</manifest><spine>${spine.join('')}</spine></package>`);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip', compression: 'DEFLATE' });
 }
 

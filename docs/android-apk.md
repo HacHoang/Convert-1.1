@@ -11,6 +11,8 @@ APK dùng Capacitor để chạy giao diện React trong Android WebView. Dữ l
 
 ## Tạo APK debug
 
+Biểu tượng nguồn vuông nằm ở `public/assets/icon.png`. Thay ảnh này rồi chạy `npm run android:assets` để tạo lại icon Android/web và manifest ứng dụng.
+
 ```powershell
 bun install
 npm run android:assets

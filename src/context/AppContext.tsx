@@ -1,11 +1,18 @@
+import { applyReadingDelta, emptyReadingStats, normalizeReadingStats, type ReadingDelta, type ReadingStats } from '../utils/readingStats';
+import { updateReadingStats } from '../utils/readingStatsStore';
+export type { ReadingStats } from '../utils/readingStats';
 import { readReaderState, clearStagedReadingPositions } from '../utils/readerState';
 import { mergeLibraryChapters, type ChapterSaveOptions } from '../utils/libraryChapterMerge';
 import { initializeDefaultDictionaries, restoreDefaultDictionaries } from '../utils/defaultDictionaries';
 import { readConvertPreference, removeLegacyAccount } from '../utils/legacyCompatibility';
 import { parseBackup, backupStores, type BackupData, type LibraryData } from '../utils/appBackup';
 import type { TranslationStyle } from '../utils/translationStyle';
+import { importDictionaryInBackground } from '../utils/backgroundDictionaryImport';
+import { persistDictionaryFile } from '../utils/persistDictionaryFile';
+import { yieldToBrowser } from '../utils/yieldToBrowser';
+import { loadMeaningStyles, meaningStyleSnapshot, meaningStyleFallback, applyMeaningStyles, MEANING_STYLES_KEY, MEANING_STYLES_FALLBACK_KEY } from '../utils/meaningStyles';
 /**
- * Context quản lý toàn bộ dữ liệu offline của Convert
+ * Context quản lý toàn bộ dữ liệu offline của Hermes
  * 100% Offline, không yêu cầu đăng nhập.
  * Hỗ trợ IndexedDB cho toàn bộ các bảng từ điển QuickTranslator (~40MB+)
  */
@@ -13,7 +20,6 @@ import type { TranslationStyle } from '../utils/translationStyle';
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { authRequest } from '../utils/googleAuth';
 import { NameItem, INITIAL_NAMES } from '../data/defaultNames';
-import { DEFAULT_VIETPHRASE } from '../data/vietphraseData';
 import { SAMPLE_CHAPTERS } from '../data/sampleNovels';
 import { 
   saveNameItem, 
@@ -26,6 +32,7 @@ import {
   saveVietphraseBatch, 
   clearVietphraseStore,
   saveNamesMainBatch,
+  savePhienAmBatch,
   clearNamesMainStore,
   saveLuatNhanBatch,
   clearLuatNhanStore,
@@ -33,7 +40,7 @@ import {
   clearPronounsStore,
   saveIgnoredPhrasesBatch,
   clearIgnoredPhrasesStore,
-  readStore, readAppValue, writeAppValue, replaceStores, deleteIgnoredPhrases,
+  readStore, readAppValue, writeAppValue, replaceStores, deleteIgnoredPhrases, deleteDictionaryKeys,
   STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRASE, STORE_LUAT_NHAN, STORE_PRONOUNS, STORE_IGNORED, STORE_PHIEN_AM, DICTIONARY_STORES
 } from '../utils/indexedDbStorage';
 import { 
@@ -63,6 +70,9 @@ export interface NovelBook {
   id: string;
   title: string;
   originalTitle?: string;
+  originalAuthor?: string;
+  vietnameseTitle?: string;
+  vietnameseAuthor?: string;
   author?: string;
   coverUrl?: string;
   description?: string;
@@ -124,10 +134,6 @@ export interface AppSettings {
   customTextColor?: string;
 }
 
-export interface ReadingStats {
-  totalReadBooks: number;
-  totalReadMinutes: number;
-}
 
 export interface GoogleAccount {
   isLoggedIn: boolean;
@@ -152,7 +158,8 @@ interface AppContextType {
   
   // Reading Stats
   readingStats: ReadingStats;
-  resetReadingStats: () => void;
+  resetReadingStats: () => Promise<boolean>;
+  recordReadingActivity: (delta: ReadingDelta) => void;
 
   // Google Account
   googleAccount: GoogleAccount;
@@ -169,6 +176,8 @@ interface AppContextType {
 
   // Names Chính (Gốc 136k từ)
   namesMainMap: Record<string, string>;
+  phienAmMap: Record<string, string>;
+  dictionaryStyleRevision: number;
   
   // Vietphrase
   vietphraseMap: Record<string, string>;
@@ -200,7 +209,10 @@ interface AppContextType {
   // IMPORT / EXPORT ĐƠN LẺ & HÀNG LOẠT
   exportSingleTxt: (dictType: DictCategoryType) => string;
   importSingleTxt: (dictType: DictCategoryType, content: string) => Promise<number>;
+  importDictionaryFile: (dictType: DictCategoryType, file: File, onProgress?: (count: number, percent: number) => void) => Promise<number>;
   clearSpecificStore: (dictType: DictCategoryType) => Promise<void>;
+  replaceIgnoredPhrases: (phrases: string[]) => Promise<void>;
+  deleteDictionaryEntries: (dictType: DictCategoryType, keys: string[]) => Promise<void>;
   loadAllQuickTranslatorAssets: (onProgress?: (msg: string, percent: number) => void) => Promise<{ success: boolean; message: string }>;
   exportAllDatabasesJson: () => Promise<string>;
   importAllDatabasesJson: (jsonStr: string) => Promise<{ success: boolean; message: string }>;
@@ -304,6 +316,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Load Names chính (136k từ)
   const [namesMainMap, setNamesMainMap] = useState<Record<string, string>>({});
+  const [phienAmMap, setPhienAmMap] = useState<Record<string, string>>({});
+  const [dictionaryStyleRevision, setDictionaryStyleRevision] = useState(0);
+  useEffect(() => {
+    const update = () => setDictionaryStyleRevision(value => value + 1);
+    window.addEventListener('translation-style-changed', update);
+    return () => window.removeEventListener('translation-style-changed', update);
+  }, []);
 
   // Load Vietphrase
   const [vietphraseMap, setVietphraseMap] = useState<Record<string, string>>({});
@@ -377,20 +396,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return DEFAULT_SETTINGS;
   });
 
-  // Reading Stats
+  // Verified reading events only; legacy demo totals are retained separately.
   const [readingStats, setReadingStats] = useState<ReadingStats>(() => {
-    try {
-      const stored = readConvertPreference('convert_reading_stats');
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch {
-      // ignore
-    }
-    return {
-      totalReadBooks: 2,
-      totalReadMinutes: 145,
-    };
+    try { return normalizeReadingStats(JSON.parse(readConvertPreference('convert_reading_stats') || 'null')); }
+    catch { return emptyReadingStats(); }
   });
 
   // Google Account
@@ -458,10 +467,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         await writeAppValue('library', library);
       }
       const storedSettings = await readAppValue<AppSettings>('settings') || settingsRef.current;
-      const stats = await readAppValue<ReadingStats>('readingStats') || statsRef.current;
+      const stats = await updateReadingStats(current => current, statsRef.current);
       await writeAppValue('settings', storedSettings);
-      await writeAppValue('readingStats', stats);
       await initializeDefaultDictionaries((message, percent) => { if (active) setDictionaryLoadStatus(`${message} ${percent}%`); });
+      await loadMeaningStyles();
       const stores = await Promise.all(DICTIONARY_STORES.map(name => readStore<any>(name)));
       if (!active) return;
       libraryRef.current = library;
@@ -474,9 +483,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setNamesList(stores[0]);
       const map = (rows: any[]) => Object.fromEntries(rows.map(row => [row.chinese, row.vietnamese]));
       setNamesMainMap(map(stores[1]));
+      setPhienAmMap(map(stores[6]));
       setVietphraseMap(map(stores[2]));
-      setLuatNhanMap({ ...DEFAULT_LUAT_NHAN, ...Object.fromEntries(stores[3].map(row => [row.pattern, row.translation])) });
-      setPronounsMap({ ...DEFAULT_PRONOUNS, ...map(stores[4]) });
+      setLuatNhanMap(Object.fromEntries(stores[3].map(row => [row.pattern, row.translation])));
+      setPronounsMap(map(stores[4]));
       setIgnoredPhrasesList(stores[5].map(row => row.phrase));
       setStorageReady(true);
       // Keep legacy copies as a recovery source; IndexedDB is authoritative after migration.
@@ -503,13 +513,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(error => { reportStorageError(error); return false; });
   };
 
-  const resetReadingStats = () => {
+  const statsChannel = useRef<BroadcastChannel | null>(null);
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel('hermes-reading-stats-v2'); statsChannel.current = channel;
+    let active = true;
+    channel.onmessage = () => { void readAppValue<ReadingStats>('readingStats').then(value => {
+      if (active && value) { const next = normalizeReadingStats(value); statsRef.current = next; setReadingStats(next); }
+    }).catch(() => {}); };
+    return () => { active = false; channel.close(); statsChannel.current = null; };
+  }, []);
+  const recordReadingActivity = (delta: ReadingDelta) => {
     void enqueue(async () => {
-      const next = { totalReadBooks: 0, totalReadMinutes: 0 };
-      await writeAppValue('readingStats', next);
+      const next = await updateReadingStats(current => applyReadingDelta(current, delta));
+      statsRef.current = next; setReadingStats(next); statsChannel.current?.postMessage('changed');
+    }).catch(reportStorageError);
+  };
+
+  const resetReadingStats = () => {
+    return enqueue(async () => {
+      const next = await updateReadingStats(() => emptyReadingStats());
       statsRef.current = next;
       setReadingStats(next);
-    }).catch(reportStorageError);
+      statsChannel.current?.postMessage('changed');
+      return true;
+    }).catch(error => { reportStorageError(error); return false; });
   };
 
   const loginWithGoogle = async (credential: string, csrf: string) => {
@@ -756,19 +784,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       case 'names_main':
         return Object.entries(namesMainMap).map(([k, v]) => `${k}=${v}`).join('\n');
       case 'vietphrase': {
-        const merged = { ...DEFAULT_VIETPHRASE, ...vietphraseMap };
+        const merged = vietphraseMap;
         return Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n');
       }
       case 'luatnhan': {
-        const merged = { ...DEFAULT_LUAT_NHAN, ...luatNhanMap };
+        const merged = luatNhanMap;
         return Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n');
       }
       case 'pronouns': {
-        const merged = { ...DEFAULT_PRONOUNS, ...pronounsMap };
+        const merged = pronounsMap;
         return Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n');
       }
       case 'phienam':
-        return Object.entries(CHINESE_PHIEN_AM_WORDS).map(([k, v]) => `${k}=${v}`).join('\n');
+        return Object.entries(phienAmMap).map(([k, v]) => `${k}=${v}`).join('\n');
       case 'ignored':
         return ignoredPhrasesList.join('\n');
       default:
@@ -777,13 +805,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const importSingleTxt = async (dictType: DictCategoryType, content: string): Promise<number> => {
-    const lines = content.split(/\r?\n/);
+    const lines = content.split(/\r\n|\r|\n/);
     let count = 0;
 
     if (dictType === 'ignored') {
       const phrases = lines.map(l => l.trim()).filter(l => l && !l.startsWith('#') && !l.startsWith('//'));
-      await saveIgnoredPhrasesBatch(phrases);
-      setIgnoredPhrasesList(phrases);
+      await replaceIgnoredPhrases(phrases);
       return phrases.length;
     }
 
@@ -806,21 +833,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     switch (dictType) {
       case 'names': {
-        const items: NameItem[] = keyValBatch.map((e, idx) => ({
-          id: `name-import-${crypto.randomUUID()}`,
-          chinese: e.chinese,
-          vietnamese: e.vietnamese,
-          category: 'Nhân vật',
-          note: 'Nhập từ tệp TXT',
-          createdAt: Date.now(),
-        }));
-        await saveNamesBatch(items);
-        setNamesList(prev => {
-          const map = new Map<string, NameItem>();
-          for (const item of prev) map.set(item.chinese, item);
-          for (const item of items) map.set(item.chinese, item);
-          return Array.from(map.values());
-        });
+        // A Chinese key has one value even across repeated imports/batches.
+        const map = new Map((await readStore<NameItem>(STORE_NAMES)).map(item => [item.chinese, item]));
+        for (const entry of keyValBatch) {
+          const existing = map.get(entry.chinese);
+          map.set(entry.chinese, {
+            id: existing?.id || `name-import-${crypto.randomUUID()}`,
+            chinese: entry.chinese, vietnamese: entry.vietnamese,
+            category: existing?.category || 'Nhân vật', note: existing?.note || 'Nhập từ tệp TXT',
+            createdAt: existing?.createdAt || Date.now(),
+          });
+        }
+        const next = [...map.values()];
+        await replaceStores({ [STORE_NAMES]: next });
+        setNamesList(next);
         break;
       }
       case 'names_main': {
@@ -830,6 +856,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           for (const item of keyValBatch) next[item.chinese] = item.vietnamese;
           return next;
         });
+        break;
+      }
+      case 'phienam': {
+        await savePhienAmBatch(keyValBatch);
+        setPhienAmMap(previous => ({ ...previous, ...Object.fromEntries(keyValBatch.map(row => [row.chinese, row.vietnamese])) }));
         break;
       }
       case 'vietphrase': {
@@ -865,6 +896,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return count;
   };
 
+  const importDictionaryFile = async (dictType: DictCategoryType, file: File, onProgress?: (count: number, percent: number) => void): Promise<number> => {
+    if (typeof Worker !== 'undefined') {
+      const count = await persistDictionaryFile(dictType, file, onProgress);
+      onProgress?.(count, 96);
+      const store = { names: STORE_NAMES, names_main: STORE_NAMES_MAIN, vietphrase: STORE_VIETPHRASE, phienam: STORE_PHIEN_AM, luatnhan: STORE_LUAT_NHAN, pronouns: STORE_PRONOUNS, ignored: STORE_IGNORED }[dictType];
+      const rows = await readStore<any>(store);
+      if (dictType === 'names') setNamesList(rows);
+      else if (dictType === 'ignored') setIgnoredPhrasesList(rows.map(row => row.phrase));
+      else {
+        const map: Record<string, string> = Object.create(null);
+        for (let index = 0; index < rows.length; index++) {
+          const row = rows[index]; map[row.chinese ?? row.pattern] = row.vietnamese ?? row.translation;
+          if (index % 20000 === 19999) await yieldToBrowser();
+        }
+        switch (dictType) {
+          case 'names_main': setNamesMainMap(map); break;
+          case 'vietphrase': setVietphraseMap(map); break;
+          case 'phienam': setPhienAmMap(map); break;
+          case 'luatnhan': setLuatNhanMap(map); break;
+          case 'pronouns': setPronounsMap(map); break;
+        }
+      }
+      onProgress?.(count, 100);
+      return count;
+    }
+    if (dictType === 'ignored') {
+      const phrases = new Set<string>();
+      await importDictionaryInBackground(file, onProgress, async entries => {
+        for (const entry of entries) phrases.add(entry.chinese);
+      }, 'ignored');
+      await replaceIgnoredPhrases([...phrases]);
+      return phrases.size;
+    }
+    const stores: Partial<Record<DictCategoryType, string>> = {
+      names: STORE_NAMES, names_main: STORE_NAMES_MAIN, vietphrase: STORE_VIETPHRASE,
+      phienam: STORE_PHIEN_AM, luatnhan: STORE_LUAT_NHAN, pronouns: STORE_PRONOUNS,
+    };
+    const store = stores[dictType];
+    if (!store) throw new Error('Loại tệp không hỗ trợ nhập từ điển.');
+    const names = dictType === 'names' ? new Map((await readStore<NameItem>(STORE_NAMES)).map(item => [item.chinese, item])) : null;
+    let committed = 0, processed = 0;
+    const refresh = async () => {
+      if (dictType === 'names') return;
+      const rows = await readStore<any>(store);
+      const map: Record<string, string> = Object.create(null);
+      for (let index = 0; index < rows.length; index++) {
+        const row = rows[index];
+        map[row.chinese ?? row.pattern] = row.vietnamese ?? row.translation;
+        if (index % 10000 === 9999) await yieldToBrowser();
+      }
+      switch (dictType) {
+        case 'names_main': setNamesMainMap(map); break;
+        case 'vietphrase': setVietphraseMap(map); break;
+        case 'phienam': setPhienAmMap(map); break;
+        case 'luatnhan': setLuatNhanMap(map); break;
+        case 'pronouns': setPronounsMap(map); break;
+      }
+    };
+    try {
+      await importDictionaryInBackground(file, onProgress, async entries => {
+        if (names) {
+          for (const entry of entries) {
+            const existing = names.get(entry.chinese);
+            names.set(entry.chinese, { id: existing?.id || `name-import-${crypto.randomUUID()}`, ...entry,
+              category: existing?.category || 'Nhân vật', createdAt: existing?.createdAt || Date.now(), note: existing?.note || 'Nhập TXT' });
+          }
+        } else {
+          switch (dictType) {
+            case 'names_main': await saveNamesMainBatch(entries); break;
+            case 'vietphrase': await saveVietphraseBatch(entries); break;
+            case 'phienam': await savePhienAmBatch(entries); break;
+            case 'luatnhan': await saveLuatNhanBatch(entries.map(row => ({ pattern: row.chinese, translation: row.vietnamese }))); break;
+            case 'pronouns': await savePronounsBatch(entries); break;
+          }
+          committed += entries.length;
+        }
+        processed += entries.length;
+      });
+      if (names) {
+        const next = [...names.values()];
+        await replaceStores({ [STORE_NAMES]: next });
+        committed = processed;
+        setNamesList(next);
+      } else await refresh();
+      return processed;
+    } catch (error) {
+      if (committed) await refresh();
+      throw new Error(`Đã lưu ${committed.toLocaleString()} mục trước khi dừng: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const replaceIgnoredPhrases = async (phrases: string[]): Promise<void> => {
+    const next = [...new Set(phrases.map(phrase => phrase.trim()).filter(Boolean))];
+    await replaceStores({ [STORE_IGNORED]: next.map(phrase => ({ phrase })) });
+    setIgnoredPhrasesList(next);
+  };
+
   const clearSpecificStore = async (dictType: DictCategoryType): Promise<void> => {
     switch (dictType) {
       case 'names':
@@ -875,22 +1003,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         await clearNamesMainStore();
         setNamesMainMap({});
         break;
+      case 'phienam':
+        await replaceStores({ [STORE_PHIEN_AM]: [] });
+        setPhienAmMap({});
+        break;
       case 'vietphrase':
         await clearVietphraseStore();
         setVietphraseMap({});
         break;
       case 'luatnhan':
         await clearLuatNhanStore();
-        setLuatNhanMap(DEFAULT_LUAT_NHAN);
+        setLuatNhanMap({});
         break;
       case 'pronouns':
         await clearPronounsStore();
-        setPronounsMap(DEFAULT_PRONOUNS);
+        setPronounsMap({});
         break;
       case 'ignored':
         await clearIgnoredPhrasesStore();
-        setIgnoredPhrasesList(DEFAULT_IGNORED_PHRASES);
+        setIgnoredPhrasesList([]);
         break;
+    }
+  };
+
+  const deleteDictionaryEntries = async (dictType: DictCategoryType, keys: string[]): Promise<void> => {
+    const removed = new Set(keys);
+    if (!removed.size) return;
+    const stores: Partial<Record<DictCategoryType, string>> = {
+      names: STORE_NAMES, names_main: STORE_NAMES_MAIN, vietphrase: STORE_VIETPHRASE, phienam: STORE_PHIEN_AM,
+      luatnhan: STORE_LUAT_NHAN, pronouns: STORE_PRONOUNS, ignored: STORE_IGNORED,
+    };
+    const store = stores[dictType];
+    if (!store) throw new Error('Bảng này chỉ hỗ trợ tra cứu.');
+    const storageKeys = dictType === 'names' ? namesList.filter(row => removed.has(row.chinese)).map(row => row.id) : [...removed];
+    await deleteDictionaryKeys(store, storageKeys);
+    const withoutKeys = (map: Record<string, string>) => Object.fromEntries(Object.entries(map).filter(([key]) => !removed.has(key)));
+    switch (dictType) {
+      case 'names': setNamesList(prev => prev.filter(row => !removed.has(row.chinese))); break;
+      case 'names_main': setNamesMainMap(withoutKeys); break;
+      case 'phienam': setPhienAmMap(withoutKeys); break;
+      case 'vietphrase': setVietphraseMap(withoutKeys); break;
+      case 'luatnhan': setLuatNhanMap(withoutKeys); break;
+      case 'pronouns': setPronounsMap(withoutKeys); break;
+      case 'ignored': setIgnoredPhrasesList(prev => prev.filter(key => !removed.has(key))); break;
     }
   };
 
@@ -900,9 +1055,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       await enqueue(async () => {
         const bundle = await restoreDefaultDictionaries(onProgress);
+        await loadMeaningStyles();
         applyDictionaryStores(bundle.stores);
       });
-      return { success: true, message: 'Đã nạp bộ từ điển mặc định của Convert.' };
+      return { success: true, message: 'Đã nạp bộ từ điển mặc định của Hermes.' };
     } catch (error) {
       return { success: false, message: error instanceof Error ? error.message : 'Không nạp được từ điển mặc định.' };
     }
@@ -912,7 +1068,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const stores = await Promise.all(DICTIONARY_STORES.map(name => readStore<any>(name)));
     const map = (rows: any[]) => Object.fromEntries(rows.map(row => [row.chinese, row.vietnamese]));
     const backup: BackupData = {
-      app: 'Convert', version: 3, exportedAt: new Date().toISOString(),
+      app: 'Hermes', version: 3, exportedAt: new Date().toISOString(),
+      meaningStyles: meaningStyleSnapshot(),
+      meaningStylesFallback: meaningStyleFallback(),
       namesList: stores[0], namesMainMap: map(stores[1]), vietphraseMap: map(stores[2]),
       luatNhanMap: Object.fromEntries(stores[3].map(row => [row.pattern, row.translation])),
       pronounsMap: map(stores[4]), ignoredPhrasesList: stores[5].map(row => row.phrase), phienAmMap: map(stores[6]),
@@ -927,8 +1085,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const library = { novelsList: data.novelsList ?? libraryRef.current.novelsList,
         savedChapters: data.savedChapters ?? libraryRef.current.savedChapters };
       const preferences = data.settings ?? settingsRef.current;
-      const stats = data.readingStats ?? statsRef.current;
-      await replaceStores(backupStores(data), { library, settings: preferences, readingStats: stats, dictionariesInitialized: true, ...(data.readerState ? { readerState: data.readerState } : {}) });
+      const stats = normalizeReadingStats(data.readingStats ?? statsRef.current);
+      await replaceStores(backupStores(data), { library, settings: preferences, readingStats: stats, dictionariesInitialized: true, ...(data.readerState ? { readerState: data.readerState } : {}), ...(data.meaningStyles !== undefined ? { [MEANING_STYLES_KEY]: data.meaningStyles, [MEANING_STYLES_FALLBACK_KEY]: data.meaningStylesFallback ?? null } : {}) });
+      if (data.meaningStyles !== undefined) applyMeaningStyles(data.meaningStyles, data.meaningStylesFallback ?? null);
       if (data.readerState) clearStagedReadingPositions();
       libraryRef.current = library;
       settingsRef.current = preferences;
@@ -939,9 +1098,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setReadingStats(stats);
       if (data.namesList !== undefined) setNamesList(data.namesList);
       if (data.namesMainMap !== undefined) setNamesMainMap(data.namesMainMap);
+      if (data.phienAmMap !== undefined) setPhienAmMap(data.phienAmMap);
       if (data.vietphraseMap !== undefined) setVietphraseMap(data.vietphraseMap);
-      if (data.luatNhanMap !== undefined) setLuatNhanMap({ ...DEFAULT_LUAT_NHAN, ...data.luatNhanMap });
-      if (data.pronounsMap !== undefined) setPronounsMap({ ...DEFAULT_PRONOUNS, ...data.pronounsMap });
+      if (data.luatNhanMap !== undefined) setLuatNhanMap(data.luatNhanMap);
+      if (data.pronounsMap !== undefined) setPronounsMap(data.pronounsMap);
       if (data.ignoredPhrasesList !== undefined) setIgnoredPhrasesList(data.ignoredPhrasesList);
       return { success: true, message: 'Đã khôi phục dữ liệu. Các phần không có trong bản sao lưu cũ được giữ nguyên.' };
     } catch (error) {
@@ -951,7 +1111,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const exportNamesTxt = (): string => exportSingleTxt('names');
   const importNamesTxt = (content: string): number => {
-    const lines = content.split(/\r?\n/);
+    const lines = content.split(/\r\n|\r|\n/);
     let count = 0;
     const newItems: NameItem[] = [];
 
@@ -990,7 +1150,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const exportVietphraseTxt = (): string => exportSingleTxt('vietphrase');
   const importVietphraseTxt = (content: string): number => {
-    const lines = content.split(/\r?\n/);
+    const lines = content.split(/\r\n|\r|\n/);
     let count = 0;
     const newEntries: Record<string, string> = {};
     const batchList: Array<{ chinese: string; vietnamese: string }> = [];
@@ -1002,7 +1162,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (parts.length >= 2) {
         const cn = parts[0].trim();
         const vn = parts.slice(1).join('=').trim();
-        if (cn && vn) {
+        if (cn) {
           newEntries[cn] = vn;
           batchList.push({ chinese: cn, vietnamese: vn });
           count++;
@@ -1025,6 +1185,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const map = (name: string) => Object.fromEntries((stores[name] as { chinese: string; vietnamese: string }[]).map(row => [row.chinese, row.vietnamese]));
     setNamesList(stores[STORE_NAMES] as NameItem[]);
     setNamesMainMap(map(STORE_NAMES_MAIN));
+    setPhienAmMap(map(STORE_PHIEN_AM));
     setVietphraseMap(map(STORE_VIETPHRASE));
     setLuatNhanMap(Object.fromEntries((stores[STORE_LUAT_NHAN] as { pattern: string; translation: string }[]).map(row => [row.pattern, row.translation])));
     setPronounsMap(map(STORE_PRONOUNS));
@@ -1033,6 +1194,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const resetDictionaries = () => enqueue(async () => {
     const bundle = await restoreDefaultDictionaries();
+    await loadMeaningStyles();
     applyDictionaryStores(bundle.stores);
   });
 
@@ -1082,7 +1244,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const merged = mergeLibraryChapters(current.savedChapters, incoming, options);
       result = { novelId: novel.id, count: merged.count, overwritten: merged.overwritten, skipped: merged.skipped };
       return {
-        novelsList: existing ? current.novelsList.map(row => row.id === novel.id ? { ...row, updatedAt: Date.now() } : row) : [novel, ...current.novelsList],
+        novelsList: existing ? current.novelsList.map(row => row.id === novel.id ? { ...row,
+          ...(typeof book === 'string' ? {} : {
+            originalTitle: book.originalTitle || row.originalTitle,
+            originalAuthor: book.originalAuthor || row.originalAuthor,
+            vietnameseTitle: book.vietnameseTitle || row.vietnameseTitle,
+            vietnameseAuthor: book.vietnameseAuthor || row.vietnameseAuthor,
+          }), updatedAt: Date.now() } : row) : [novel, ...current.novelsList],
         savedChapters: merged.chapters,
       };
     });
@@ -1095,7 +1263,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const parsed = parseChapterHeader(chapter.title);
     const safeNovel = (chapter.novelTitle || 'Tieu_Thuyet').trim().replace(/[\\/:*?"<>|]/g, '_');
     const safeChap = (chapter.title || 'Chuong').trim().replace(/[\\/:*?"<>|]/g, '_');
-    const filePath = `/local/Convert/Lib/${safeNovel}/${safeChap}.txt`;
+    const filePath = `/local/Hermes/Lib/${safeNovel}/${safeChap}.txt`;
 
     const newChapter: Omit<SavedChapter, 'id' | 'savedAt'> = {
       ...chapter,
@@ -1137,6 +1305,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setActiveTab,
         readingStats,
         resetReadingStats,
+        recordReadingActivity,
         googleAccount,
         loginWithGoogle,
         logoutGoogle,
@@ -1147,6 +1316,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         exportNamesTxt,
         importNamesTxt,
         namesMainMap,
+        phienAmMap,
+        dictionaryStyleRevision,
         vietphraseMap,
         addVietphrase,
         deleteVietphrase,
@@ -1166,7 +1337,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setImportProgress,
         exportSingleTxt,
         importSingleTxt,
+        importDictionaryFile,
         clearSpecificStore,
+        replaceIgnoredPhrases,
+        deleteDictionaryEntries,
         loadAllQuickTranslatorAssets,
         exportAllDatabasesJson,
         importAllDatabasesJson,

@@ -78,3 +78,14 @@ test('web EPUB keeps editorial order, language, escaped metadata and embedded co
   assert.match(first, /&lt;an toàn&gt; &amp;/);
   assert.equal(await zip.file('mimetype').async('string'), 'application/epub+zip');
 });
+
+test('EPUB retains Chinese and Vietnamese title/author alternatives as escaped metadata', async () => {
+  const { createNovelEpub } = load('../src/utils/epubExport.ts');
+  const blob = await createNovelEpub({ title: 'Tên truyện', author: 'Tác giả', originalTitle: '天黑請點燈', originalAuthor: '羅樵森 & <原名>', vietnameseTitle: 'Tên truyện', vietnameseAuthor: 'Tác giả' }, [{ id: '1', title: '1', originalText: 'text', vietphraseText: '', savedAt: 0 }]);
+  const zip = await require('jszip').loadAsync(await blob.arrayBuffer());
+  const opf = await zip.file('EPUB/book.opf').async('string');
+  assert.match(opf, /<dc:title id="book-title">Tên truyện<\/dc:title>/);
+  assert.match(opf, /refines="#book-title" property="alternate-script" xml:lang="zh">天黑請點燈/);
+  assert.match(opf, /refines="#book-author" property="alternate-script" xml:lang="zh">羅樵森 &amp; &lt;原名&gt;/);
+  assert.equal((opf.match(/property="alternate-script"/g) || []).length, 2);
+});

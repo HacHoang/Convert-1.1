@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+import { useBackgroundTasks } from '../../context/BackgroundTasks';
 import { speechService } from '../../utils/speechEngine';
 import { 
   Volume2, 
@@ -39,7 +40,7 @@ export const SettingsView: React.FC = () => {
       setTestSpeechPlaying(false);
       return;
     }
-    const sampleText = 'Xin chào, đây là giọng đọc thử nghiệm của ứng dụng Convert.';
+    const sampleText = 'Xin chào, đây là giọng đọc thử nghiệm của ứng dụng Hermes.';
     setTestSpeechError('');
     setTestSpeechPlaying(true);
     speechService.speak(sampleText, settings.ttsRate, {
@@ -48,23 +49,22 @@ export const SettingsView: React.FC = () => {
     });
   };
 
-  const [backupBusy, setBackupBusy] = useState(false);
+  const background = useBackgroundTasks();
+  const backupBusy = background.running;
   const [backupError, setBackupError] = useState('');
   const handleExportFullBackup = async () => {
-    setBackupBusy(true);
     setBackupError('');
     try {
       const json = await exportAllDatabasesJson();
       const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `convert_backup_${Date.now()}.json`;
+      link.download = `hermes_backup_${Date.now()}.json`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
       setBackupSuccess(true);
       setTimeout(() => setBackupSuccess(false), 2000);
-    } catch (error) { setBackupError(String(error)); }
-    finally { setBackupBusy(false); }
+    } catch (error) { setBackupError(String(error)); background.reportResult(String(error), true); }
   };
 
   const handleRestoreBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -72,15 +72,16 @@ export const SettingsView: React.FC = () => {
     const file = input.files?.[0];
     if (!file) return;
     if (!window.confirm('Thay thế các phần dữ liệu có trong bản sao lưu? Các phần không có trong bản cũ được giữ nguyên.')) { input.value = ''; return; }
-    setBackupBusy(true);
-    setBackupSuccess(false);
-    setBackupError('');
-    try {
-      const result = await importAllDatabasesJson(await file.text());
-      if (!result.success) throw new Error(result.message);
-      alert(result.message);
-    } catch (error) { setBackupError(String(error)); }
-    finally { setBackupBusy(false); input.value = ''; }
+    background.run('Khôi phục bản sao lưu', async () => {
+      setBackupSuccess(false);
+      setBackupError('');
+      try {
+        const result = await importAllDatabasesJson(await file.text());
+        if (!result.success) throw new Error(result.message);
+        background.reportResult(result.message);
+      } catch (error) { setBackupError(String(error)); background.reportResult(String(error), true); }
+      finally { input.value = ''; }
+    });
   };
 
   return (
@@ -178,7 +179,7 @@ export const SettingsView: React.FC = () => {
         <div className="flex items-center gap-2 flex-wrap pt-2">
           <button
             disabled={backupBusy}
-            onClick={handleExportFullBackup}
+            onClick={() => background.run('Xuất bản sao lưu', handleExportFullBackup)}
             className="flex items-center gap-1.5 px-3 py-2 bg-raised/90 hover:bg-hover/90 text-main border border-line/70 rounded-lg text-xs font-medium transition-colors"
           >
             <Download size={14} />
@@ -201,9 +202,9 @@ export const SettingsView: React.FC = () => {
             disabled={backupBusy}
             onClick={async () => {
               if (window.confirm('Đặt lại toàn bộ từ điển về mặc định?')) {
-                setBackupBusy(true);
-                try { await resetDictionaries(); } catch (error) { setBackupError(String(error)); }
-                finally { setBackupBusy(false); }
+                background.run('Đặt lại từ điển', async () => {
+                  await resetDictionaries();
+                });
               }
             }}
             className="flex items-center gap-1.5 px-3 py-2 text-rose-400 hover:bg-rose-950/30 rounded-lg text-xs font-medium transition-colors ml-auto border border-rose-900/40"

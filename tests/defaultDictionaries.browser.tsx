@@ -4,6 +4,7 @@ import React, { act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppProvider, useApp } from '../src/context/AppContext';
 import { initializeDefaultDictionaries } from '../src/utils/defaultDictionaries';
+import { assignedMeanings, preferredMeaning, meaningStyleFallback, meaningStyleSnapshot } from '../src/utils/meaningStyles';
 import { DICTIONARY_STORES, STORE_APP, openDB, readAppValue, writeAppValue, readStore,
   saveVietphraseItem, deleteVietphraseItem, deleteIgnoredPhrases, clearPronounsStore } from '../src/utils/indexedDbStorage';
 
@@ -33,10 +34,12 @@ async function run() {
   });
   assert((await counts()).every(count => count === 0), 'Test requires an empty dictionary database.');
   const fetcher = globalThis.fetch;
+  const WorkerClass = globalThis.Worker;
+  (globalThis as any).Worker = undefined;
   globalThis.fetch = async () => { throw new Error('Simulated offline'); };
   try { await initializeDefaultDictionaries(); throw new Error('Offline initialization succeeded'); }
   catch (error) { assert(String(error).includes('Simulated offline'), String(error)); }
-  finally { globalThis.fetch = fetcher; }
+  finally { globalThis.fetch = fetcher; globalThis.Worker = WorkerClass; }
   assert(!await readAppValue('dictionariesInitialized'), 'Failed initialization set the marker');
   assert((await counts()).every(count => count === 0), 'Failed initialization left partial data');
   lines.push('PASS failed first load leaves no partial data or completion marker');
@@ -51,6 +54,15 @@ async function run() {
   assert(JSON.stringify(await counts()) === JSON.stringify(expected), 'Fresh install counts do not match the captured snapshot');
   assert(api.namesList.length === expected[0] && Object.keys(api.vietphraseMap).length === expected[2], 'Provider did not load the default snapshot');
   lines.push('PASS fresh AppProvider installs all seven captured dictionaries');
+  assert(meaningStyleFallback() === 'neutral', 'Fresh install did not apply the neutral fallback');
+  assert(Object.keys(meaningStyleSnapshot().vietphrase || {}).length === 12305, 'Fresh install lost specific meaning styles');
+  const styled = Object.entries(meaningStyleSnapshot().vietphrase || {}).find(([, rows]) => rows.some(row => row.styles.some(style => style !== 'neutral')))!;
+  assert(styled && assignedMeanings('vietphrase', styled[0])?.some(row => row.styles.length), 'Fresh install lost meaning tags');
+  const backup = JSON.parse(await api.exportAllDatabasesJson());
+  assert(backup.meaningStylesFallback === 'neutral' && backup.meaningStyles.vietphrase[styled[0]], 'Backup omitted automatic style tags');
+  assert(assignedMeanings('vietphrase', '法师')?.some(row => row.automatic === true), 'Default tags lost automatic provenance');
+  assert(preferredMeaning('vietphrase', '法师', 'neutral') === undefined, 'Automatic neutral tags changed the original default meaning');
+  lines.push('PASS automatic meaning tags and implicit neutral fallback install and export together');
   const editedPhrase = Object.keys(api.vietphraseMap)[0];
   await saveVietphraseItem(editedPhrase, 'user-edit');
   assert((await readStore<any>('vietphrase_store')).find(row => row.chinese === editedPhrase)?.vietnamese === 'user-edit', 'Edit failed to override bundled data');
@@ -80,6 +92,8 @@ async function run() {
   assert(JSON.stringify(await readAppValue('settings')) === JSON.stringify(settings), 'Reset changed settings');
   assert(await readAppValue('regression-sentinel') === 'keep', 'Reset cleared unrelated app values');
   lines.push('PASS reset restores captured dictionaries and preserves library/settings');
+  assert(meaningStyleFallback() === 'neutral' && assignedMeanings('vietphrase', styled[0])?.some(row => row.styles.length), 'Reset lost default tags');
+  lines.push('PASS reset restores tags together with dictionary data');
   await act(async () => { root.unmount(); });
 }
 run().then(() => { output.textContent = lines.join('\n') + '\nALL PASSED'; })

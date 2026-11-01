@@ -32,7 +32,7 @@ export async function fetchWebResource(input: string, signal: AbortSignal, redir
   const pinned = addresses[0];
   const result = await new Promise<{ status: number; location?: string; data: Buffer; type: string; challenge: boolean }>((resolve, reject) => {
     const request = (url.protocol === 'https:' ? https : http).get(url, {
-      signal, headers: { 'User-Agent': 'Convert/1.1 WebImport', Accept: 'text/html,application/xhtml+xml,image/*', 'Accept-Encoding': 'identity' },
+      signal, headers: { 'User-Agent': 'Hermes/1.1 WebImport', Accept: 'text/html,application/xhtml+xml,image/*', 'Accept-Encoding': 'identity' },
       lookup: ((_host: string, options: { all?: boolean }, callback: Function) => options.all ? callback(null, [pinned]) : callback(null, pinned.address, pinned.family)) as any,
     }, response => {
       const chunks: Buffer[] = [];

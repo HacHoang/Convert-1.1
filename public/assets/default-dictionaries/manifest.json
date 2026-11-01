@@ -1,55 +1,61 @@
 {
-  "version": "2026-10-30-current",
-  "capturedAt": "2026-10-30T10:08:10.398Z",
+  "version": "2026-11-01-style-tags-v1",
+  "capturedAt": "2026-11-01T01:47:36.324Z",
   "stores": [
     {
       "store": "names_store",
       "file": "names_store.json.gz",
-      "count": 2344,
-      "bytes": 98021,
-      "sha256": "714a865a421fd2ae2d0d0f8be9bd7e0665992be8247c78e77ac8f9e4f1720cc0"
+      "count": 2300,
+      "bytes": 95126,
+      "sha256": "ecd5d40cbf95af74184e437ad20951a5a88b4206c7b41a306be67340dc5d48ec"
     },
     {
       "store": "names_main_store",
       "file": "names_main_store.json.gz",
       "count": 136889,
-      "bytes": 1261451,
-      "sha256": "b6c914f72406896ad7505bc022c7b2553efff507caded4e49de871d6028b05f4"
+      "bytes": 1463304,
+      "sha256": "2f7e191aaa9c47992dff12f6caa564d56de7f5a22cfb558f1cd1b180f57bc5d5"
     },
     {
       "store": "vietphrase_store",
       "file": "vietphrase_store.json.gz",
-      "count": 966608,
-      "bytes": 10236400,
-      "sha256": "fd1746c329137cd886631de0f3e8b0c6d39e8cbf6c98f6e643fd4786829f1937"
+      "count": 966813,
+      "bytes": 11131947,
+      "sha256": "6bc2c14dea39ea04fe502cbd6639183a29ca22cf934e52ea5b92f4467cc8a6cf"
     },
     {
       "store": "luat_nhan_store",
       "file": "luat_nhan_store.json.gz",
       "count": 222,
-      "bytes": 3214,
-      "sha256": "f13d686f2d0f7618685a6b30295b76aa26b501456326bc4cd2c0efc11aca4cf2"
+      "bytes": 3255,
+      "sha256": "26e03c8debe48c06574c5d69f28e9674a50625cab4395a5f75761ec948c80dcb"
     },
     {
       "store": "pronouns_store",
       "file": "pronouns_store.json.gz",
       "count": 27,
       "bytes": 585,
-      "sha256": "12fe1a740e0499677f0b62cb38edf9151d8ccb86f294dcffe3538b6cce9aa801"
+      "sha256": "a72c1dde720a08f5d77cdc87607d33c0435b1b7bd8bec70df77c5da46a80d397"
     },
     {
       "store": "ignored_phrases_store",
       "file": "ignored_phrases_store.json.gz",
       "count": 187,
-      "bytes": 5855,
-      "sha256": "be38567abd706450a3f5583026d953bcafd4781eb3b46c9b7f96305b419d6edd"
+      "bytes": 5862,
+      "sha256": "46030b33772db45cdb9c2a1db2bbec8b5580a0248dc883abf4f2397c496a58f8"
     },
     {
       "store": "phien_am_store",
       "file": "phien_am_store.json.gz",
       "count": 12571,
-      "bytes": 72211,
-      "sha256": "fc80039f964721d040e17e5a4ba29ef86364de18d69ba22fa9f31b67f28b4189"
+      "bytes": 77516,
+      "sha256": "9ecfaf06898ed2e6800c1c72a44c52af1a3396dc37fcaf890676d3e84016472f"
     }
-  ]
+  ],
+  "meaningStyles": {
+    "file": "meaning_styles.json.gz",
+    "count": 13528,
+    "bytes": 176616,
+    "sha256": "b0f0c922302582a4abc0c07d7c4a0720d31df6ccfe16346995db6da02d80cf98"
+  }
 }

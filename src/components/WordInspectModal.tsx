@@ -1,7 +1,7 @@
 import { styleNameDictionary } from '../utils/translationStyle';
 /**
  * Modal tra từ & Thêm Name / Vietphrase tức thì
- * Tính năng cốt lõi đặc trưng của QuickTranslator & Convert
+ * Tính năng cốt lõi đặc trưng của QuickTranslator & Hermes
  */
 
 import React, { useState, useEffect } from 'react';
@@ -9,7 +9,6 @@ import { useApp } from '../context/AppContext';
 import { inspectChinesePhrase } from '../utils/translatorEngine';
 import { NameItem } from '../data/defaultNames';
 import { X, Copy, Check } from 'lucide-react';
-import { DEFAULT_VIETPHRASE } from '../data/vietphraseData';
 
 const capitalizeName = (value: string) => value.replace(/\p{L}[\p{L}\p{M}]*/gu, word => word.charAt(0).toLocaleUpperCase('vi') + word.slice(1));
 
@@ -22,6 +21,7 @@ export const WordInspectModal: React.FC = () => {
     addIgnoredPhrase,
     namesList,
     namesMainMap,
+    phienAmMap,
     vietphraseMap,
   } = useApp();
 
@@ -40,27 +40,27 @@ export const WordInspectModal: React.FC = () => {
       setNote('');
       setSaveSuccess(null);
 
-      const lookup = inspectChinesePhrase(cn, namesList, vietphraseMap);
+      const lookup = inspectChinesePhrase(cn, namesList, vietphraseMap, { namesMainMap, customPhienAm: phienAmMap });
       const styleName = styleNameDictionary(inspectModal.style || 'neutral')[cn];
       const initialVn = inspectModal.target === 'name'
         ? capitalizeName(lookup.existingName || styleName || namesMainMap[cn] || lookup.hanviet)
         : (lookup.existingVp ?? inspectModal.initialVietnamese ?? lookup.hanviet);
       setVietnamese(initialVn);
     }
-  }, [inspectModal.isOpen, inspectModal.initialChinese, inspectModal.initialVietnamese, inspectModal.initialCategory, inspectModal.target, inspectModal.style, namesList, namesMainMap, vietphraseMap]);
+  }, [inspectModal.isOpen, inspectModal.initialChinese, inspectModal.initialVietnamese, inspectModal.initialCategory, inspectModal.target, inspectModal.style, namesList, namesMainMap, phienAmMap, vietphraseMap]);
 
   if (!inspectModal.isOpen) return null;
 
-  const currentLookup = inspectChinesePhrase(chinese, namesList, vietphraseMap);
+  const currentLookup = inspectChinesePhrase(chinese, namesList, vietphraseMap, { namesMainMap, customPhienAm: phienAmMap });
 
   const existingStyleName = styleNameDictionary(inspectModal.style || 'neutral')[chinese.trim()];
   const hasName = currentLookup.existingName !== null || Object.hasOwn(namesMainMap, chinese.trim()) || Boolean(existingStyleName);
-  const hasVietphrase = Object.hasOwn(vietphraseMap, chinese.trim()) || Object.hasOwn(DEFAULT_VIETPHRASE, chinese.trim());
+  const hasVietphrase = Object.hasOwn(vietphraseMap, chinese.trim());
 
   const handleChineseChange = (value: string) => {
     setChinese(value);
     const key = value.trim();
-    const lookup = inspectChinesePhrase(key, namesList, vietphraseMap);
+    const lookup = inspectChinesePhrase(key, namesList, vietphraseMap, { namesMainMap, customPhienAm: phienAmMap });
     setVietnamese(inspectModal.target === 'name'
       ? capitalizeName(lookup.existingName || styleNameDictionary(inspectModal.style || 'neutral')[key] || namesMainMap[key] || lookup.hanviet)
       : lookup.existingVp ?? lookup.hanviet);

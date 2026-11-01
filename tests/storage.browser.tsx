@@ -6,6 +6,10 @@ import { AppProvider, useApp } from '../src/context/AppContext';
 import { readAppValue, readStore, replaceStores, writeAppValue, openDB, STORE_NAMES, STORE_APP } from '../src/utils/indexedDbStorage';
 import { importEpub } from '../src/utils/epubImport';
 import JSZip from 'jszip';
+import { saveMeaningStyles, preferredMeaning, MEANING_STYLES_KEY } from '../src/utils/meaningStyles';
+import { importDictionaryInBackground } from '../src/utils/backgroundDictionaryImport';
+import { BackgroundTasks, BackgroundTaskIndicator, useBackgroundTasks } from '../src/context/BackgroundTasks';
+import { persistDictionaryFile } from '../src/utils/persistDictionaryFile';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 const output = document.getElementById('results')!;
@@ -29,6 +33,43 @@ async function run() {
   assert(api, 'Provider hydration timed out');
   const original = await api.exportAllDatabasesJson();
   try {
+    await replaceStores({ vietphrase_store: [{ chinese: '保留', vietnamese: 'giữ nguyên' }, { chinese: '更新', vietnamese: 'cũ' }] });
+    const fastCount = await persistDictionaryFile('vietphrase', new File(['更新=mới\n长词语很长也可以=nghĩa dài\n空='], 'fast.txt'));
+    const fastRows = await readStore<any>('vietphrase_store');
+    assert(fastCount === 3 && fastRows.length === 4 && fastRows.some(row => row.chinese === '保留' && row.vietnamese === 'giữ nguyên') && fastRows.some(row => row.chinese === '更新' && row.vietnamese === 'mới') && fastRows.some(row => row.chinese === '空' && row.vietnamese === ''), 'Snapshot import lost existing keys, empty meanings or updates');
+    let invalidFailed = false;
+    try { await persistDictionaryFile('vietphrase', new File([new Uint8Array([0xff, 0xff, 0xff])], 'invalid.txt')); } catch { invalidFailed = true; }
+    assert(invalidFailed && JSON.stringify(await readStore('vietphrase_store')) === JSON.stringify(fastRows), 'Failed snapshot import changed durable dictionary');
+    lines.push('PASS atomic worker dictionary import preserves old keys and rejects corrupt files without partial writes');
+    let failed = false, completed = false, batches = 0;
+    try {
+      await importDictionaryInBackground(new File([Array.from({ length: 12000 }, (_, index) => `worker-${index}=value`).join('\n')], 'worker.txt'), (_, percent) => { if (percent === 100) completed = true; }, async () => { batches++; throw new Error('test persistence failure'); });
+    } catch (error) { failed = error instanceof Error && error.message === 'test persistence failure'; }
+    assert(failed && batches === 1 && !completed, 'Worker ignored failed batch or reported success before persistence');
+    lines.push('PASS worker backpressure aborts on persistence failure');
+    const sortWorker = new Worker(new URL('../src/utils/dictionarySort.worker.ts', import.meta.url), { type: 'module' });
+    try {
+      const indexes = await new Promise<Uint32Array>((resolve, reject) => {
+        sortWorker.onmessage = event => resolve(event.data);
+        sortWorker.onerror = event => reject(new Error(event.message));
+        sortWorker.postMessage({ keys: ['中10', '中2', '中文很长', '𠀀'], rule: 'length-desc' });
+      });
+      assert(indexes[0] === 2 && indexes[indexes.length - 1] === 3, 'Sort worker did not sort by Unicode character length');
+    } finally { sortWorker.terminate(); }
+    lines.push('PASS worker sorting handles long phrases and supplementary Han characters');
+    await act(async () => { await saveMeaningStyles('vietphrase', '先生', [{ meaning: 'thầy', styles: ['modern', 'romance'] }]); });
+    await remount();
+    assert(preferredMeaning('vietphrase', '先生', 'romance') === 'thầy', 'Meaning tags did not survive remount');
+    const taggedBackup = JSON.parse(await api.exportAllDatabasesJson());
+    assert(taggedBackup.meaningStyles.vietphrase['先生'][0].styles.length === 2, 'Backup lost meaning styles');
+    await act(async () => { await saveMeaningStyles('vietphrase', '先生', []); });
+    await act(async () => {
+      const restored = await api.importAllDatabasesJson(JSON.stringify({ app: 'Hermes', version: '2.6-offline', vietphraseMap: {}, meaningStyles: taggedBackup.meaningStyles, meaningStylesFallback: 'neutral' }));
+      assert(restored.success, restored.message);
+    });
+    assert(preferredMeaning('vietphrase', '先生', 'modern') === 'thầy', 'Restore did not update meaning tags');
+    assert((await readAppValue<any>(MEANING_STYLES_KEY)).vietphrase['先生'][0].meaning === 'thầy', 'Restored tags were not durable');
+    lines.push('PASS per-meaning style tags survive reload, export and restore');
     await act(async () => {
       const result = await api.importAllDatabasesJson(JSON.stringify({
         app: 'TTV Translate', version: '2.6-offline', namesList: [], vietphraseMap: {}, savedChapters: [],
@@ -41,6 +82,65 @@ async function run() {
     await remount();
     assert(api.namesList.length === 0 && api.savedChapters.length === 0, 'Empty sections resurrected on reload');
     lines.push('PASS cleared data stays empty after remount');
+
+    // Deletion must span pages, await persistence and preserve unrelated tables.
+    const dictionaryFixture = Object.fromEntries(Array.from({ length: 125 }, (_, index) => [`test-${index}`, `nghĩa ${index}`]));
+    await act(async () => {
+      const result = await api.importAllDatabasesJson(JSON.stringify({
+        app: 'Hermes', version: '2.6-offline',
+        vietphraseMap: dictionaryFixture, namesMainMap: dictionaryFixture,
+        luatNhanMap: dictionaryFixture, pronounsMap: dictionaryFixture,
+      }));
+      assert(result.success, result.message);
+    });
+    await act(async () => { await api.deleteDictionaryEntries('vietphrase', Object.keys(dictionaryFixture).slice(0, 110)); });
+    assert(Object.keys(api.vietphraseMap).length === 15, 'Bulk deletion missed items beyond the first page');
+    assert(Object.keys(api.namesMainMap).length === 125, 'Bulk deletion changed another table');
+    await remount();
+    assert(Object.keys(api.vietphraseMap).length === 15, 'Deleted entries returned after remount');
+    for (const type of ['vietphrase', 'names_main', 'luatnhan', 'pronouns'] as const) {
+      await act(async () => { await api.clearSpecificStore(type); });
+    }
+    await remount();
+    assert([api.vietphraseMap, api.namesMainMap, api.luatNhanMap, api.pronounsMap].every(map => Object.keys(map).length === 0), 'Cleared dictionaries resurrected defaults');
+    assert(api.exportSingleTxt('vietphrase') === '' && api.exportSingleTxt('pronouns') === '', 'Export resurrected cleared defaults');
+    lines.push('PASS cross-page dictionary deletion and cleared tables survive reload and export');
+    await act(async () => { await api.replaceIgnoredPhrases(['cũ', 'giữ']); });
+    await act(async () => { await api.replaceIgnoredPhrases(['mới', 'giữ', 'mới']); });
+    await remount();
+    assert(JSON.stringify(api.ignoredPhrasesList) === JSON.stringify(['mới', 'giữ']), 'Edited ignored phrases resurrected old keys or duplicates');
+    await act(async () => { await api.importSingleTxt('ignored', 'nhập mới'); });
+    await remount();
+    assert(JSON.stringify(api.ignoredPhrasesList) === JSON.stringify(['nhập mới']), 'Importing ignored phrases retained obsolete rows');
+    await act(async () => { await api.clearSpecificStore('ignored'); });
+    await remount();
+    assert(api.ignoredPhrasesList.length === 0, 'Cleared ignored phrases returned');
+    lines.push('PASS ignored phrase editing, replacement import and clear persist');
+    await act(async () => { await api.importSingleTxt('names_main', '罗彬=La Bân'); });
+    await act(async () => { await api.importSingleTxt('phienam', '罗=la\n彬=bân'); });
+    await remount();
+    assert(api.namesMainMap['罗彬'] === 'La Bân', 'Main Names import did not persist');
+    assert(api.phienAmMap['罗'] === 'la' && api.phienAmMap['彬'] === 'bân', 'Phonetics import was ignored');
+    assert(api.exportSingleTxt('phienam').includes('彬=bân'), 'Phonetics export ignored active dictionary');
+    await act(async () => { await api.clearSpecificStore('phienam'); });
+    await remount();
+    assert(Object.keys(api.phienAmMap).length === 0, 'Cleared phonetics returned');
+    lines.push('PASS main Names and imported phonetics persist and export accurately');
+    await act(async () => { await api.importSingleTxt('names', '罗彬=La Bân\n罗彬=La Bình'); });
+    await act(async () => { await api.importSingleTxt('names', '罗彬=La Bân'); });
+    await remount();
+    const matchingNames = api.namesList.filter(item => item.chinese === '罗彬');
+    assert(matchingNames.length === 1 && matchingNames[0].vietnamese === 'La Bân', 'Repeated Names2 import persisted duplicate keys or an outdated meaning');
+    lines.push('PASS repeated secondary Name imports retain one current value after reload');
+    await act(async () => { await api.clearSpecificStore('vietphrase'); });
+    const importText = Array.from({ length: 5101 }, (_, index) => `长词${index}=${index === 5100 ? '' : `nghĩa ${index}`}`).join('\r\n');
+    await act(async () => { await api.importDictionaryFile('vietphrase', new File([importText], 'large.txt')); });
+    await remount();
+    assert(Object.keys(api.vietphraseMap).length === 5101 && api.vietphraseMap['长词5100'] === '', 'Streaming import lost a batch or empty meaning');
+    await act(async () => { await api.importDictionaryFile('names', new File(['罗彬=La Bình\n罗彬=La Bân'], 'Names2.txt')); });
+    await remount();
+    assert(api.namesList.filter(item => item.chinese === '罗彬').length === 1, 'Streaming Name import duplicated keys');
+    lines.push('PASS streaming file imports commit all batches and retain empty meanings without duplicate Names');
 
     const epub = new JSZip();
     epub.file('META-INF/container.xml', '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>');
@@ -188,6 +288,22 @@ async function run() {
     await act(async () => { const result = await api.importAllDatabasesJson(original); assert(result.success, result.message); });
   }
   await act(async () => { root.unmount(); });
+  // Task lifetime belongs to the app shell, not the view that started it.
+  let taskApi: ReturnType<typeof useBackgroundTasks>;
+  let completeWork: () => void;
+  function TaskProbe() { taskApi = useBackgroundTasks(); return <span>Original view</span>; }
+  root = createRoot(document.getElementById('test-root')!);
+  await act(async () => { root.render(<BackgroundTasks><BackgroundTaskIndicator /><TaskProbe /></BackgroundTasks>); });
+  await act(async () => {
+    taskApi.run('Background fixture', () => new Promise<void>(resolve => { completeWork = resolve; }));
+  });
+  await act(async () => { root.render(<BackgroundTasks><BackgroundTaskIndicator /><button>Other feature</button></BackgroundTasks>); });
+  assert(document.querySelector('[role="progressbar"]'), 'Switching views removed the active task');
+  assert(!document.querySelector('button')?.disabled, 'Background task blocked another feature');
+  await act(async () => { completeWork(); await wait(); });
+  assert(!document.querySelector('[role="progressbar"]') && document.body.textContent?.includes('Background fixture: hoàn tất.'), 'Completion notification was lost after view unmount');
+  await act(async () => { root.unmount(); });
+  lines.push('PASS app-level task survives view unmount and announces completion');
 }
 run().then(() => { output.textContent = lines.join('\n') + '\nALL PASSED'; })
   .catch(error => { output.textContent = lines.join('\n') + '\nFAIL: ' + error.stack; });

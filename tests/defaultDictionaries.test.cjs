@@ -21,7 +21,7 @@ test('bundled snapshot contains complete, intact dictionary data and no library 
     assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256);
     const rows = JSON.parse(gunzipSync(bytes));
     assert.equal(rows.length, entry.count);
-    assert.ok(!rows.some(row => row.chinese?.toLowerCase() === 'ttv' && row.vietnamese === 'tangthuvien'));
+    assert.ok(!rows.some(row => ['apiKeys', 'savedChapters', 'novelsList', 'settings'].some(key => Object.hasOwn(row, key))));
   }
   assert.ok(manifest.stores.find(entry => entry.store === 'vietphrase_store').count > 960000);
   assert.ok(manifest.stores.find(entry => entry.store === 'names_main_store').count > 136000);
@@ -33,6 +33,7 @@ test('manifest rejects missing, duplicate and unsafe store paths', () => {
     m => { m.stores[0] = m.stores[1]; },
     m => { m.stores[0].file = '../other.json.gz'; },
     m => { m.stores[0].store = 'app_store'; },
+    m => { m.meaningStyles.file = '../other.json.gz'; },
   ]) {
     const value = structuredClone(manifest); edit(value);
     assert.throws(() => validateDefaultManifest(value));
@@ -51,6 +52,9 @@ function fixture() {
     entry.sha256 = createHash('sha256').update(bytes).digest('hex');
     files.set(entry.file, bytes);
   }
+  const styleBytes = gzipSync(JSON.stringify({ version: 1, fallback: 'neutral', entries: { vietphrase: { 中: [{ meaning: 'trung', styles: ['neutral'] }] } } }));
+  value.meaningStyles = { file: 'meaning_styles.json.gz', count: 1, bytes: styleBytes.length, sha256: createHash('sha256').update(styleBytes).digest('hex') };
+  files.set(value.meaningStyles.file, styleBytes);
   const fetcher = async url => url.endsWith('manifest.json') ? Response.json(value) : new Response(files.get(url.split('/').pop()));
   return { value, files, fetcher };
 }
@@ -62,6 +66,14 @@ test('loader handles gzip and already-decoded static-host responses', async () =
     new Response(gunzipSync(data.files.get(url.split('/').pop()))));
   assert.deepEqual(gzip, decoded);
   assert.equal(Object.keys(gzip.stores).length, 7);
+  assert.equal(gzip.meaningStyles.fallback, 'neutral');
+});
+
+test('bad style metadata rejects the whole default bundle', async () => {
+  const data = fixture();
+  const bytes = data.files.get('meaning_styles.json.gz');
+  data.files.set('meaning_styles.json.gz', bytes.subarray(0, bytes.length - 1));
+  await assert.rejects(loadDefaultDictionaries(undefined, data.fetcher));
 });
 
 test('failed download or truncated content never returns a partial default bundle', async () => {

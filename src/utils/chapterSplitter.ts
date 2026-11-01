@@ -1,3 +1,4 @@
+import { readTextFile } from './textFile';
 /**
  * Module xử lý và phân tách chương hàng loạt (Batch Chapter Splitter)
  * Tối ưu hóa hiệu năng cao cho truyện lớn lên đến 2000+ chương
@@ -195,7 +196,7 @@ export async function readFileContent(file: File): Promise<{ title: string; cont
 
   // Tệp TXT
   try {
-    const text = await file.text();
+    const text = await readTextFile(file);
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     const title = lines[0] || fileName.replace(/\.[^/.]+$/, '');
     return { title, content: text };

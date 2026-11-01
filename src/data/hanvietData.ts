@@ -1,5 +1,5 @@
 /**
- * Từ điển Hán Việt & Pinyin chuẩn cho Convert
+ * Từ điển Hán Việt & Pinyin chuẩn cho Hermes
  * Tự động loại bỏ trùng lặp và tương thích hoàn toàn TypeScript
  */
 
@@ -597,4 +597,3 @@ export function getPinyinChar(char: string): string {
   }
   return '';
 }
-

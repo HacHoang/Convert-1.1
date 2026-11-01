@@ -722,7 +722,7 @@ export const LibraryView: React.FC = () => {
                 <div className="library-book-path text-[10.5px] font-mono text-accent flex items-center gap-1.5 bg-canvas/80 px-2.5 py-1 rounded-lg border border-line/80">
                   <Folder size={12} className="shrink-0" />
                   <span className="text-muted">Thư mục:</span>
-                  <span className="truncate">/local/Convert/Lib/{selectedNovel.title}/</span>
+                  <span className="truncate">/local/Hermes/Lib/{selectedNovel.title}/</span>
                 </div>
 
                 <button disabled={!novelChapters.length} onClick={() => { setReaderChapterId(undefined); setReaderBookId(selectedNovel.id); }} className="studio-action studio-action-primary disabled:opacity-40"><BookOpen size={16} />{readingProgress[selectedNovel.id] ? 'Đọc tiếp' : 'Đọc truyện'}</button>

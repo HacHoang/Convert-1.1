@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "react-example",
+      "name": "hermes",
       "dependencies": {
         "@capacitor/android": "^8.6.0",
         "@capacitor/core": "^8.6.0",

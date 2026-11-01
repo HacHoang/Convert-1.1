@@ -1,7 +1,10 @@
+import { ReadingStatsMetrics } from './ReadingStatsMetrics';
+import { ChevronDown } from 'lucide-react';
+import { BackgroundTaskIndicator } from '../context/BackgroundTasks';
 /**
  * Android Top App Bar & Status Bar + Google AI Studio Pattern Navigation Drawer
  * - Nút Menu 3 gạch mở ngăn kéo điều hướng chuẩn mẫu Google AI Studio
- * - Thẻ thống kê 3 block vuông bo cong nhẹ (Truyện đã lưu, Đã đọc, Số giờ đọc) + Bánh răng bé xíu xóa thống kê
+ * - Thống kê đọc thực tế: 6 chỉ số thu gọn, mũi tên mở rộng và tùy chọn đặt lại lịch sử đọc
  * - Hàng 4 nút tiện ích & Cài đặt ngay trên phần tài khoản
  * - Mục dưới cùng là Link Tài Khoản Google (hỗ trợ trạng thái Đăng nhập / Chưa đăng nhập)
  */
@@ -9,6 +12,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { HelpDialog } from './HelpDialog';
+import { ApiKeyDialog } from './ApiKeyDialog';
 import { GoogleSignInButton } from './GoogleSignInButton';
 import { useApp, AppTheme, AppTab } from '../context/AppContext';
 import { 
@@ -30,7 +34,7 @@ import {
   Check,
   Bell,
   Search,
-  Key,
+  KeyRound,
   Files,
   LayoutDashboard,
   FileText,
@@ -45,6 +49,14 @@ import {
   Database
 } from 'lucide-react';
 
+const tabLabels: Record<AppTab, string> = {
+  translate: 'Dịch nhanh',
+  batch: 'Dịch nhiều chương',
+  web: 'Truyện từ web',
+  library: 'Thư viện',
+  dictionary: 'Từ điển',
+  settings: 'Cài đặt',
+};
 
 export const AndroidHeader: React.FC = () => {
   const { 
@@ -70,13 +82,18 @@ export const AndroidHeader: React.FC = () => {
 
   // Popups bên trong Drawer
   const [isGearMenuOpen, setIsGearMenuOpen] = useState(false);
+  const [statsExpanded, setStatsExpanded] = useState(false);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
   const [guideSection, setGuideSection] = useState<'guide' | 'shortcuts'>('guide');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [brandWidth, setBrandWidth] = useState<number | null>(null);
+  const brandRef = useRef<HTMLDivElement>(null);
+  const quickNavRef = useRef<HTMLDivElement>(null);
 
   const aaMenuRef = useRef<HTMLDivElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
@@ -99,7 +116,10 @@ export const AndroidHeader: React.FC = () => {
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (notificationsRef.current && !notificationsRef.current.contains(target)) setIsNotificationsOpen(false);
+      if (notificationsRef.current && !notificationsRef.current.contains(target)) {
+        setIsNotificationsOpen(false);
+        setIsSearchOpen(false);
+      }
       if (
         isAaMenuOpen &&
         aaMenuRef.current &&
@@ -173,17 +193,41 @@ export const AndroidHeader: React.FC = () => {
     });
   };
 
-  const currentNavTitle = { translate: 'Dịch nhanh', batch: 'Dịch nhiều chương', web: 'Truyện từ web', library: 'Thư viện', dictionary: 'Từ điển', settings: 'Cài đặt' }[activeTab];
+  useEffect(() => {
+    // The main content bounds stay the same across tabs, including lazy views.
+    const workspace = document.querySelector<HTMLElement>('#app-frame > main');
+    if (!workspace) return;
+
+    const updateWidth = () => {
+      const workspaceRect = workspace.getBoundingClientRect();
+      const brand = brandRef.current;
+      const quickNav = quickNavRef.current;
+      if (workspaceRect.width < 768 || !brand || !quickNav) {
+        setBrandWidth(null);
+        return;
+      }
+
+      // Align the navigation border with the source pane's 15% minimum.
+      const gap = parseFloat(getComputedStyle(brand.parentElement!).columnGap) || 0;
+      const margin = parseFloat(getComputedStyle(quickNav).marginLeft) || 0;
+      const dividerLeft = workspaceRect.left + workspaceRect.width * 0.15;
+      setBrandWidth(Math.max(0, dividerLeft - brand.getBoundingClientRect().left - gap - margin));
+    };
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(workspace);
+    updateWidth();
+    return () => observer.disconnect();
+  }, []);
 
   const handleSelectNav = (tab: AppTab, _title?: string) => {
     setActiveTab(tab);
     setIsDrawerOpen(false);
   };
 
-  const handleResetStats = () => {
-    resetReadingStats();
+  const handleResetStats = async () => {
     setIsGearMenuOpen(false);
-    showToast('Đã xóa toàn bộ dữ liệu thống kê đọc!');
+    if (await resetReadingStats()) showToast('Đã đặt lại thời gian và lịch sử đọc.');
   };
 
   const handleGoogleAuthAction = () => {
@@ -230,68 +274,67 @@ export const AndroidHeader: React.FC = () => {
 
 
       {/* Main App Bar */}
-      <div className="flex items-center justify-between px-3 sm:px-4 py-2">
-        {/* Bên Trái: Nút Menu 3 gạch giữ nguyên vị trí hiện tại + Tên nút vừa được ấn */}
+      <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2">
+        {/* Bên Trái: Nút Menu 3 gạch và tên ứng dụng */}
         <div className="flex min-w-0 items-center gap-2.5">
           {/* Nút Menu 3 gạch mở Navigation Drawer */}
           <button
             onClick={() => setIsDrawerOpen(true)}
-            className="w-8 h-8 rounded-lg bg-raised hover:bg-hover text-main hover:text-main border border-line transition-all flex items-center justify-center shadow-2xs cursor-pointer group"
+            className="w-8 h-8 shrink-0 rounded-lg bg-raised hover:bg-hover text-main hover:text-main border border-line transition-all flex items-center justify-center shadow-2xs cursor-pointer group"
             title="Mở menu danh mục điều hướng"
             aria-label="Mở menu"
           >
             <Menu size={18} className="group-hover:scale-105 transition-transform" />
           </button>
 
-          {/* Tên nút vừa được ấn hiển thị trực tiếp bên cạnh nút menu */}
+          {/* Tên ứng dụng có chiều rộng cố định theo mức thu nhỏ nhất của khung Tiếng Trung */}
           <div 
+            ref={brandRef}
             onClick={() => handleSelectNav('translate', 'Dịch nhanh')}
-            className="flex min-w-0 items-center gap-1.5 cursor-pointer group select-none"
+            style={brandWidth === null ? undefined : { width: brandWidth }}
+            className="flex w-14 @min-[768px]/app:w-auto min-w-0 shrink-0 items-center gap-1.5 cursor-pointer group select-none"
           >
             <h1 className="truncate text-sm font-semibold tracking-tight text-main leading-tight group-hover:text-accent transition-colors">
-              {currentNavTitle}
+              Hermes
             </h1>
           </div>
 
+          <div
+            data-mobile-section-title
+            title={tabLabels[activeTab]}
+            className="flex h-6 min-w-0 items-center border-l border-line pl-3 text-xs font-medium text-muted @min-[768px]/app:hidden"
+          >
+            <span className="truncate">{tabLabels[activeTab]}</span>
+          </div>
+
           {/* Thanh điều hướng nhanh cho PC (Chỉ hiển thị trên PC md:flex) */}
-          <div className="hidden @min-[760px]/app:flex items-center gap-1 ml-3 pl-3 border-l border-line text-xs">
-            <button
-              onClick={() => handleSelectNav('translate', 'Dịch nhanh')}
-              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
-                activeTab === 'translate'
-                  ? 'bg-raised text-accent font-semibold'
-                  : 'text-muted hover:text-main hover:bg-raised/60'
-              }`}
-            >
-              Dịch nhanh
-            </button>
-            <button
-              onClick={() => handleSelectNav('batch', 'Dịch nhiều chương')}
-              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
-                activeTab === 'batch'
-                  ? 'bg-accent text-main font-semibold shadow-xs'
-                  : 'text-main hover:text-main hover:bg-raised/60'
-              }`}
-              title="Dịch nhiều chương"
-            >
-              <span>Dịch nhiều chương</span>
-            </button>
-            <button onClick={() => handleSelectNav('web')} className={`px-2.5 py-1 rounded-md transition-colors ${activeTab === 'web' ? 'bg-raised text-accent' : 'text-muted hover:text-main hover:bg-raised/60'}`}>Truyện từ web</button>
-            <button
-              onClick={() => handleSelectNav('library', 'Thư viện')}
-              className={`px-2.5 py-1 rounded-md transition-colors font-medium cursor-pointer ${
-                activeTab === 'library'
-                  ? 'bg-raised text-accent font-semibold'
-                  : 'text-muted hover:text-main hover:bg-raised/60'
-              }`}
-            >
-              Thư viện
-            </button>
+          <div ref={quickNavRef} className="hidden @min-[768px]/app:flex items-center gap-1 ml-3 pl-3 border-l border-line text-xs">
+            {([
+              ['translate', 'Dịch nhanh'],
+              ['batch', 'Dịch nhiều chương'],
+              ['web', 'Truyện từ web'],
+              ['library', 'Thư viện'],
+            ] as const).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => handleSelectNav(tab, label)}
+                aria-current={activeTab === tab ? 'page' : undefined}
+                className={`whitespace-nowrap rounded-md px-2.5 py-1 font-medium transition-colors duration-150 cursor-pointer ${
+                  activeTab === tab
+                    ? 'bg-raised text-accent'
+                    : 'text-muted hover:bg-raised/60 hover:text-main'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
 
+        <div data-background-task-slot className="min-w-0 flex-1 max-w-60 has-[[role=progressbar]]:min-w-12"><BackgroundTaskIndicator /></div>
         {/* Bên Phải: Aa Button + Theme Button + Display Mode Toggle */}
-        <div className="flex items-center gap-1 sm:gap-1.5 relative">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-1.5 relative">
           {/* Nút Menu Popup Aa (Cài đặt kiểu chữ & cỡ chữ) */}
           <button
             ref={aaBtnRef}
@@ -579,19 +622,16 @@ export const AndroidHeader: React.FC = () => {
                   onClick={() => { setActiveTab('translate'); setIsDrawerOpen(false); }}
                   className="flex items-center gap-2.5 cursor-pointer group select-none"
                 >
-                  <div className="w-8 h-8 rounded-lg border border-line bg-raised text-main flex items-center justify-center font-medium text-sm">
-                    C
-                  </div>
+                  <img src="/assets/icons/icon-192.webp" alt="" className="h-10 w-10 shrink-0 rounded-full object-cover ring-1 ring-line" />
                   <div>
                     <div className="flex items-center gap-1.5">
                       <h2 className="text-base font-bold text-main tracking-tight group-hover:text-accent transition-colors">
-                        Convert
+                        Hermes
                       </h2>
                       <span className="text-[10px] text-muted font-normal">
                         1.1
                       </span>
                     </div>
-                    <p className="text-[10.5px] text-muted font-medium">Dịch và đọc truyện</p>
                   </div>
                 </div>
 
@@ -725,9 +765,9 @@ export const AndroidHeader: React.FC = () => {
                 1. Thẻ thống kê 3 block vuông + bánh răng bé xíu xóa thống kê
                 2. Thanh 4 icon tiện ích (trên phần tài khoản là Cài đặt)
                 3. Phần dưới cùng là link tài khoản Google */}
-            <div className="p-3 bg-surface border-t border-line/90 space-y-2.5">
+            <div data-drawer-footer className="shrink-0 p-3 bg-surface border-t border-line/90 space-y-2.5">
               
-              {/* THẺ THỐNG KÊ NỔI BẬT (3 block vuông bo cong nhẹ + bánh răng bé xíu) */}
+              {/* THỐNG KÊ ĐỌC THỰC TẾ */}
               <div data-drawer-stats className="rounded-xl border border-line/90 p-2.5 relative">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-1.5">
@@ -737,7 +777,10 @@ export const AndroidHeader: React.FC = () => {
                   </div>
 
                   {/* Bánh răng bé xíu ở góc cạnh thanh thống kê */}
-                  <div className="relative">
+                  <div className="relative flex items-center gap-1">
+                    <button type="button" aria-label={statsExpanded ? 'Thu gọn thống kê' : 'Xem đầy đủ thống kê'} aria-expanded={statsExpanded} aria-controls="drawer-reading-metrics" onClick={() => setStatsExpanded(value => !value)} className="rounded-md p-1 text-muted transition-colors hover:bg-raised hover:text-main">
+                      <ChevronDown size={14} className={`transition-transform ${statsExpanded ? 'rotate-180' : ''}`} />
+                    </button>
                     <button
                       onClick={() => setIsGearMenuOpen(prev => !prev)}
                       className="p-1 rounded-md text-muted hover:text-main hover:bg-raised transition-colors cursor-pointer"
@@ -765,74 +808,42 @@ export const AndroidHeader: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 3 Block vuông bo cong nhẹ */}
-                <div className="grid grid-cols-3 gap-2">
-                  {/* Block 1: Số sách trong giá */}
-                  <div className="flex flex-col items-center justify-center p-2 rounded-xl bg-surface/90 border border-line text-center">
-                    <span className="text-base font-bold font-mono text-accent leading-none">
-                      {novelsList.length}
-                    </span>
-                    <span className="text-[9.5px] text-muted mt-1 leading-tight line-clamp-1">
-                      Truyện đã lưu
-                    </span>
-                  </div>
-
-                  {/* Block 2: Số sách đã đọc */}
-                  <div className="flex flex-col items-center justify-center p-2 rounded-xl bg-surface/90 border border-line text-center">
-                    <span className="text-base font-bold font-mono text-amber-400 leading-none">
-                      {readingStats.totalReadBooks}
-                    </span>
-                    <span className="text-[9.5px] text-muted mt-1 leading-tight line-clamp-1">
-                      Đã đọc
-                    </span>
-                  </div>
-
-                  {/* Block 3: Số giờ đã đọc */}
-                  <div className="flex flex-col items-center justify-center p-2 rounded-xl bg-surface/90 border border-line text-center">
-                    <span className="text-base font-bold font-mono text-emerald-400 leading-none">
-                      {(readingStats.totalReadMinutes / 60).toFixed(1)}h
-                    </span>
-                    <span className="text-[9.5px] text-muted mt-1 leading-tight line-clamp-1">
-                      Giờ đọc
-                    </span>
-                  </div>
-                </div>
+                <ReadingStatsMetrics stats={readingStats} novels={novelsList} chapters={savedChapters} expanded={statsExpanded} />
               </div>
 
               {/* THANH TIỆN ÍCH 4 NÚT HÀNG NGANG (TRÊN PHẦN TÀI KHOẢN LÀ CÀI ĐẶT) */}
               <div ref={notificationsRef} className="relative">
               {/* POPUP: Bảng Thông Báo Nhanh */}
               {isNotificationsOpen && (
-                <div id="notifications-panel" role="region" aria-label="Thông báo hệ thống" className="absolute inset-x-0 bottom-full mb-2 z-50 max-h-[min(22rem,60dvh)] overflow-y-auto overscroll-contain p-3 rounded-xl bg-surface border border-line shadow-xl space-y-2 text-xs">
-                  <div className="flex items-center justify-between pb-1.5 border-b border-line">
-                    <span className="font-semibold text-main">Thông báo hệ thống</span>
+                <div id="notifications-panel" role="region" aria-label="Thông báo" className="absolute inset-x-0 bottom-full mb-2 z-50 w-full max-w-full max-h-[min(24rem,calc(100dvh-2rem))] overflow-x-hidden overflow-y-auto overscroll-contain p-2 rounded-2xl bg-surface border border-line shadow-xl space-y-2 text-xs">
+                  <div className="flex min-w-0 items-center justify-between gap-2 pb-1.5 border-b border-line">
+                    <span className="min-w-0 truncate font-semibold text-main">Thông báo</span>
                     <button aria-label="Đóng thông báo" onClick={() => setIsNotificationsOpen(false)} className="text-muted hover:text-main">
                       <X size={13} />
                     </button>
                   </div>
-                  <div className="space-y-1.5 text-[11px] text-main">
-                    <div className="p-2 rounded-lg bg-canvas/80 border border-line">
-                      <div className="font-medium text-accent">Vietphrase Offline Sẵn Sàng</div>
-                      <div className="text-muted text-[10px]">Toàn bộ cơ sở dữ liệu từ điển đã sẵn sàng dịch mà không cần internet.</div>
-                    </div>
-                    <div className="p-2 rounded-lg bg-canvas/80 border border-line">
-                      <div className="font-medium text-emerald-400">Đa Nghĩa Vietphrase</div>
-                      <div className="text-muted text-[10px]">Hỗ trợ chọn nghĩa phụ khi bôi đen và đảo thứ tự ưu tiên từ vựng.</div>
+                  <div className="flex items-start gap-3 rounded-xl bg-raised/70 p-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-canvas text-muted">
+                      <Bell size={18} />
+                    </span>
+                    <div className="min-w-0 flex-1 pt-0.5">
+                      <p className="truncate text-xs font-medium text-main">Chưa có thông báo</p>
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted">Thông báo mới sẽ hiển thị ở đây.</p>
                     </div>
                   </div>
                 </div>
               )}
 
-              <div className="grid grid-cols-4 gap-1.5">
+              <div data-drawer-utilities className="grid grid-cols-4 gap-1.5">
                 {/* 1. Nút Thông báo */}
                 <button
-                  onClick={() => setIsNotificationsOpen(prev => !prev)}
+                  onClick={() => { setIsNotificationsOpen(prev => !prev); setIsSearchOpen(false); }}
                   className={`h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
                     isNotificationsOpen 
                       ? 'bg-raised border-line text-main shadow-xs' 
                       : 'bg-surface border-line text-muted hover:text-main hover:bg-raised'
                   }`}
-                  title="Thông báo hệ thống"
+                  title="Thông báo"
                   aria-label="Thông báo"
                   aria-expanded={isNotificationsOpen}
                   aria-controls="notifications-panel"
@@ -856,7 +867,7 @@ export const AndroidHeader: React.FC = () => {
 
                 {/* 3. Nút Tìm kiếm nhanh */}
                 <button
-                  onClick={() => setIsSearchOpen(prev => !prev)}
+                  onClick={() => { setIsSearchOpen(prev => !prev); setIsNotificationsOpen(false); }}
                   className={`h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
                     isSearchOpen
                       ? 'bg-raised border-line text-main shadow-xs'
@@ -864,37 +875,38 @@ export const AndroidHeader: React.FC = () => {
                   }`}
                   title="Tìm kiếm từ vựng / truyện"
                   aria-label="Tìm kiếm"
+                  aria-expanded={isSearchOpen}
+                  aria-controls="drawer-search-panel"
                 >
                   <Search size={16} />
                 </button>
 
-                {/* 4. Nút Phím tắt / Khóa */}
+                {/* 4. Quản lý API keys */}
                 <button
                   onClick={() => {
-                    setGuideSection('shortcuts');
-                    setIsShortcutsOpen(true);
+                    setIsApiKeyDialogOpen(true);
                     setIsDrawerOpen(false);
                   }}
                   className={`h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
-                    isShortcutsOpen
+                    isApiKeyDialogOpen
                       ? 'bg-raised border-line text-main shadow-xs'
                       : 'bg-surface border-line text-muted hover:text-main hover:bg-raised'
                   }`}
-                  title="Xem phím tắt nhanh"
-                  aria-label="Phím tắt"
+                  title="Quản lý API keys"
+                  aria-label="API keys"
+                  aria-expanded={isApiKeyDialogOpen}
                 >
-                  <Key size={16} />
+                  <KeyRound size={16} />
                 </button>
-              </div>
-
               </div>
 
               {/* POPUP: Bảng Tìm Kiếm Nhanh */}
               {isSearchOpen && (
-                <div className="p-2.5 rounded-xl bg-surface border border-line shadow-xl space-y-2 animate-in fade-in duration-150">
+                <div id="drawer-search-panel" role="search" aria-label="Tìm kiếm nhanh" className="absolute inset-x-0 bottom-full mb-2 z-50 max-h-[min(24rem,calc(100dvh-2rem))] overflow-y-auto p-2.5 rounded-xl bg-surface border border-line shadow-xl space-y-2 animate-in fade-in duration-150">
                   <div className="flex items-center gap-2">
                     <Search size={14} className="text-accent shrink-0" />
                     <input
+                      autoFocus
                       type="text"
                       placeholder="Tìm truyện hoặc từ vựng..."
                       value={searchQuery}
@@ -903,6 +915,7 @@ export const AndroidHeader: React.FC = () => {
                     />
                     <button
                       onClick={() => setIsSearchOpen(false)}
+                      aria-label="Đóng tìm kiếm"
                       className="text-muted hover:text-main p-1"
                     >
                       <X size={14} />
@@ -924,9 +937,10 @@ export const AndroidHeader: React.FC = () => {
                   )}
                 </div>
               )}
+              </div>
 
               {/* PHẦN DƯỚI CÙNG: LINK TÀI KHOẢN GOOGLE THEO MẪU CHỤP */}
-              <div className="relative">
+              <div data-drawer-account className="relative">
                 {googleAccount.isLoggedIn ? (
                   // Verified Google profile, restored from the server session.
                   <div 
@@ -1000,6 +1014,7 @@ export const AndroidHeader: React.FC = () => {
         </div>, document.getElementById('app-frame') || document.body
       )}
       {isShortcutsOpen && <HelpDialog initialSection={guideSection} onClose={() => setIsShortcutsOpen(false)} />}
+      {isApiKeyDialogOpen && <ApiKeyDialog onClose={() => setIsApiKeyDialogOpen(false)} />}
     </header>
   );
 };

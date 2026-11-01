@@ -1,5 +1,5 @@
 /**
- * IndexedDB Multi-Store Storage Helper for Convert App
+ * IndexedDB Multi-Store Storage Helper for Hermes
  * Hỗ trợ lưu trữ toàn bộ các bảng từ điển QuickTranslator (~40MB+)
  * Bộ mặc định lưu theo snapshot; chỉnh sửa lưu riêng. Quota vẫn phụ thuộc trình duyệt.
  */
@@ -129,7 +129,8 @@ export const writeAppValue = (key: string, value: unknown): Promise<void> =>
 const writeRows = (name: string, rows: unknown[]): Promise<void> => rows.length ?
   mutate([name], tx => { for (const row of rows) tx.objectStore(name).put(row); }) : Promise.resolve();
 
-async function deleteKeys(name: string, keys: string[]): Promise<void> {
+export async function deleteDictionaryKeys(name: string, keys: string[]): Promise<void> {
+  if (!DICTIONARY_STORES.includes(name)) throw new Error('Bảng từ điển không hợp lệ');
   if (!keys.length) return;
   await mutate([name, STORE_APP], tx => {
     const app = tx.objectStore(STORE_APP);
@@ -141,6 +142,7 @@ async function deleteKeys(name: string, keys: string[]): Promise<void> {
     for (const key of keys) tx.objectStore(name).delete(key);
   });
 }
+const deleteKeys = deleteDictionaryKeys;
 
 // Replace snapshots and clear prior edits in ONE transaction. Bulk snapshots avoid
 // millions of IndexedDB put requests during a fresh install or a full restore.
@@ -188,6 +190,7 @@ export const clearVietphraseStore = () => replaceStores({ [STORE_VIETPHRASE]: []
 export const getStoredNamesMain = () => getMap(STORE_NAMES_MAIN);
 export const saveNamesMainBatch = (items: VietphraseRecord[]) => writeRows(STORE_NAMES_MAIN, items);
 export const clearNamesMainStore = () => replaceStores({ [STORE_NAMES_MAIN]: [] });
+export const savePhienAmBatch = (items: VietphraseRecord[]) => writeRows(STORE_PHIEN_AM, items);
 export async function getStoredLuatNhan(): Promise<Record<string, string>> {
   return Object.fromEntries((await readStore<LuatNhanRecord>(STORE_LUAT_NHAN)).map(row => [row.pattern, row.translation]));
 }

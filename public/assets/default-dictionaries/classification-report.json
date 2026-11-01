@@ -1,0 +1,54 @@
+{
+  "generatedAt": "2026-11-01T01:59:37.138Z",
+  "capturedAt": "2026-11-01T01:47:36.324Z",
+  "rules": "meaning-rules-v1",
+  "stores": {
+    "names_store": 2300,
+    "names_main_store": 136889,
+    "vietphrase_store": 966813,
+    "luat_nhan_store": 222,
+    "pronouns_store": 27,
+    "ignored_phrases_store": 187,
+    "phien_am_store": 12571
+  },
+  "byKind": {
+    "names": {
+      "terms": 2300,
+      "meanings": 2302,
+      "specificMeanings": 29,
+      "sparseTerms": 29,
+      "implicitNeutralTerms": 2271
+    },
+    "names_main": {
+      "terms": 136889,
+      "meanings": 138242,
+      "specificMeanings": 1201,
+      "sparseTerms": 1194,
+      "implicitNeutralTerms": 135695
+    },
+    "vietphrase": {
+      "terms": 966813,
+      "meanings": 1149116,
+      "specificMeanings": 12944,
+      "sparseTerms": 12305,
+      "implicitNeutralTerms": 954508
+    }
+  },
+  "tagMeanings": {
+    "neutral": 1275491,
+    "classical": 8644,
+    "cultivation": 3091,
+    "martial": 3702,
+    "modern": 3840,
+    "horror": 253,
+    "historical": 2726,
+    "scifi": 606,
+    "western": 1196,
+    "japanese": 137,
+    "gaming": 96,
+    "korean": 33,
+    "romance": 387
+  },
+  "manualMeaningsPreserved": 6,
+  "fallback": "neutral"
+}

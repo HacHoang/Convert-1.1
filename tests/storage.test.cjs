@@ -10,6 +10,25 @@ function load(file) {
 }
 const { parseBackup, backupStores } = load('appBackup.ts');
 const { parseDictionaryFileChunked } = load('largeFileImporter.ts');
+const { readTextFile } = load('textFile.ts');
+
+test('dictionary imports preserve UTF-16LE/BE, CR-only lines, empty meanings and long keys', async () => {
+  const text = '名字=La Bân\r空=\r' + '长'.repeat(126) + '=nghĩa=a/b\r';
+  const utf16le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+  const utf16be = Buffer.from(utf16le); utf16be.swap16();
+  for (const bytes of [Buffer.from(text, 'utf8'), utf16le, utf16be]) {
+    const rows = await parseDictionaryFileChunked(new File([bytes], 'dict.txt'));
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].vietnamese, 'La Bân');
+    assert.equal(rows[1].vietnamese, '');
+    assert.equal(rows[2].chinese.length, 126);
+    assert.equal(rows[2].vietnamese, 'nghĩa=a/b');
+  }
+});
+
+test('invalid text encoding is rejected instead of silently inserting replacement characters', async () => {
+  await assert.rejects(readTextFile(new Blob([new Uint8Array([0x81, 0x82, 0x83])])), /UTF-8/);
+});
 const { readConvertPreference } = load('legacyCompatibility.ts');
 const { mergeDictionaryRows } = load('indexedDbStorage.ts');
 const legacy = { app: 'TTV Translate', version: '2.6-offline', namesList: [], vietphraseMap: {}, savedChapters: [] };
@@ -30,10 +49,10 @@ test('snapshot overlays preserve edits, honor deletions, and allow re-adding ent
   assert.deepEqual(baseline[0], { chinese: 'a', vietnamese: 'old' });
 });
 
-test('current backups use Convert and old branded backups normalize to Convert', () => {
-  for (const app of ['Convert', 'TTV Translate']) {
+test('Hermes backups use current branding and old branded backups remain importable', () => {
+  for (const app of ['Hermes', 'Convert', 'TTV Translate']) {
     const backup = parseBackup(JSON.stringify({ ...legacy, app }));
-    assert.equal(backup.app, 'Convert');
+    assert.equal(backup.app, 'Hermes');
     assert.ok(!JSON.stringify(backup).includes('TTV'));
   }
 });
@@ -105,4 +124,10 @@ test('streaming import stops on failed persistence instead of reporting completi
     if (percent === 100) completed = true;
   }, async () => { throw new Error('quota'); }), /quota/);
   assert.equal(completed, false);
+});
+
+test('ignored phrase streaming retains full lines and skips comments', async () => {
+  const file = new File(['\uFEFF# comment\r\n广告=整行\r\n\r\n// skip\n末尾'], 'ignored.txt');
+  const rows = await parseDictionaryFileChunked(file, undefined, undefined, 'ignored');
+  assert.deepEqual(rows, [{ chinese: '广告=整行', vietnamese: '' }, { chinese: '末尾', vietnamese: '' }]);
 });

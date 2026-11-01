@@ -14,7 +14,7 @@ Thao tác lưu thư viện chờ giao dịch hoàn tất trước khi cập nh�
 
 Backup JSON phiên bản 3 chứa bảy bảng từ điển trong IndexedDB, danh sách truyện, chương, cài đặt và thống kê. Dữ liệu tích hợp sẵn trong mã nguồn vẫn đi kèm ứng dụng, không cần chép lại vào backup. Khôi phục kiểm tra định dạng trước khi thay thế toàn bộ các phần được cung cấp trong một giao dịch. Hỗ trợ bản cũ `2.6-offline` và JSON từ điển phiên bản 1–2: phần thiếu được giữ nguyên, phần có giá trị rỗng sẽ xóa nội dung hiện tại. Phiên đăng nhập không nằm trong backup.
 
-Backup mới có nhãn `app: "Convert"` và tên `convert_backup_….json`. Nhãn app và tiền tố localStorage cũ chỉ được nhận diện trong lớp tương thích; các tùy chọn mới dùng tiền tố `convert_`, dữ liệu IndexedDB hiện có được giữ nguyên.
+Backup mới có nhãn `app: "Hermes"` và tên `hermes_backup_….json`. Ứng dụng vẫn nhập backup cũ có nhãn `Convert` hoặc `TTV Translate`; tên cơ sở dữ liệu IndexedDB và tiền tố localStorage `convert_` được giữ để bảo toàn dữ liệu đã lưu.
 
 Nhập từ điển lớn ghi theo lô tối đa 5.000 mục. Nếu một lô thất bại, các lô đã hoàn tất vẫn được giữ; giao diện thông báo số mục đã lưu. Đây là nhập bổ sung theo lô, không phải khôi phục backup nguyên tử.
 

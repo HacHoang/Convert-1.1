@@ -1,5 +1,5 @@
 /**
- * Chương truyện mẫu tiếng Trung để người dùng test nhanh Convert
+ * Chương truyện mẫu tiếng Trung để người dùng test nhanh Hermes
  */
 
 export interface SampleChapter {
