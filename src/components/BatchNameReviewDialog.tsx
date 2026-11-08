@@ -2,10 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import type { NameSuggestion } from '../utils/batchNameDetection';
 
-export function BatchNameReviewDialog({ suggestions, busy, chapterCount, onConfirm, onCancel }: {
+export function BatchNameReviewDialog({ suggestions, busy, chapterCount, onConfirm, onCancel, onHide }: {
   suggestions: NameSuggestion[]; busy: boolean; chapterCount: number;
   onConfirm: (names: { chinese: string; vietnamese: string }[], remember: boolean) => void;
   onCancel: () => void;
+  onHide: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [rows, setRows] = useState(() => suggestions.map(row => ({ ...row, selected: false })));
@@ -28,7 +29,7 @@ export function BatchNameReviewDialog({ suggestions, busy, chapterCount, onConfi
     <div className="flex flex-col" style={{ maxHeight: 'inherit' }}>
     <header className="flex shrink-0 items-start justify-between gap-3 border-b border-line p-5">
     <h2 id="batch-name-review-title" className="text-base font-semibold">Duyệt tên nhân vật trước khi hoàn tất</h2>
-    <button aria-label="Đóng cửa sổ duyệt tên" className="shrink-0 rounded-lg p-1 text-muted hover:bg-raised" disabled={busy} onClick={onCancel}><X size={20} /></button>
+    <div className="flex shrink-0 items-center gap-2"><button className="studio-action" onClick={onHide}>Ẩn xuống nền</button><button aria-label="Đóng cửa sổ duyệt tên" className="shrink-0 rounded-lg p-1 text-muted hover:bg-raised" disabled={busy} onClick={onCancel}><X size={20} /></button></div>
     </header>
     <div className="name-review-body min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5">
     <p className="mt-2 text-sm text-muted">Đã dịch nháp {chapterCount} chương. Chọn tên đúng, sửa cách viết nếu cần rồi xác nhận. Gợi ý có thể nhầm.</p>

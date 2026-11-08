@@ -1,6 +1,7 @@
 import { styleRevision, stylePhraseDictionary, styleNameDictionary, type TranslationStyle } from './translationStyle';
 import { filterWebsiteNotices } from './paragraphFilters';
 import { assignedMeanings, preferredMeaning, meaningStyleRevision, meaningStyleSnapshot } from './meaningStyles';
+import { capitalizeLineStarts, normalizeVietnameseTypography } from './vietnameseTypography';
 /**
  * Hermes Core Engine
  * Thuật toán Forward Maximum Matching (FMM) + QuickTranslator Multiplication Rules (Luật Nhân cấp 2)
@@ -226,14 +227,15 @@ const SORTED_PRONOUNS = Object.entries(DEFAULT_PRONOUNS)
 const EMPTY_NAMES: NameItem[] = [];
 const namesCache = new WeakMap<NameItem[], Map<string, { viet: string; category: string; isCustom: boolean }>>();
 const mainNamesCache = new WeakMap<Record<string, string>, typeof namesCache>();
-const phraseCache = new WeakMap<Record<string, string>, Map<TranslationStyle, Map<string, { viet: string; isCustom: boolean }>>>();
+type CompiledPhrases = { base: Record<string, string>; overlay: Map<string, { viet: string; isCustom: boolean }> };
+const phraseCache = new WeakMap<Record<string, string>, Map<TranslationStyle, CompiledPhrases>>();
 const cachedStyleRevisions = new WeakMap<object, number>();
 const lengthIndexes = new WeakMap<object, Map<string, number[]>>();
-function dictionaryLengths(dictionary: Map<string, unknown>) {
+function dictionaryLengths(dictionary: object, keys: Iterable<string>) {
   const cached = lengthIndexes.get(dictionary);
   if (cached) return cached;
   const sets = new Map<string, Set<number>>();
-  for (const key of dictionary.keys()) {
+  for (const key of keys) {
     if (!key) continue;
     if (!sets.has(key[0])) sets.set(key[0], new Set());
     sets.get(key[0])!.add(key.length);
@@ -350,26 +352,25 @@ export function convertText(
   const stylePhrases = stylePhraseDictionary(style);
   let mergedVietphrase = phraseCache.get(userVietphrase)?.get(style);
   if (!mergedVietphrase) {
-  mergedVietphrase = new Map<string, { viet: string; isCustom: boolean }>();
-  // An explicitly supplied dictionary is authoritative, including an empty one.
-  for (const [k, v] of Object.entries(userVietphrase)) {
-    mergedVietphrase.set(k, { viet: v, isCustom: true });
-  }
+  // Keep the million-entry base dictionary by reference. Only style/meaning
+  // overrides live in a small overlay, avoiding a second full dictionary in RAM.
+  mergedVietphrase = { base: userVietphrase, overlay: new Map() };
+  const getPhrase = (key: string) => mergedVietphrase!.overlay.get(key) ?? (key in mergedVietphrase!.base ? { viet: mergedVietphrase!.base[key], isCustom: true } : undefined);
 
   for (const [key, value] of Object.entries(stylePhrases)) {
     if (assignedMeanings('vietphrase', key)) continue;
-    const existing = mergedVietphrase.get(key);
+    const existing = getPhrase(key);
     const original = existing?.viet || '';
     // Keep the source meanings available for inspection and manual selection.
     const alternatives = original.split('/').filter(meaning => meaning.trim() && meaning.trim() !== value);
-    mergedVietphrase.set(key, { viet: [value, ...alternatives].join('/'), isCustom: false });
+    mergedVietphrase.overlay.set(key, { viet: [value, ...alternatives].join('/'), isCustom: false });
   }
   for (const key of Object.keys(meaningStyleSnapshot().vietphrase || {})) {
-    const existing = mergedVietphrase.get(key);
+    const existing = getPhrase(key);
     const selected = preferredMeaning('vietphrase', key, style);
     if (existing && selected !== undefined && parseVietphraseMeanings(existing.viet).alternatives.includes(selected)) {
       const others = parseVietphraseMeanings(existing.viet).alternatives.filter(meaning => meaning !== selected);
-      mergedVietphrase.set(key, { ...existing, viet: [selected, ...others].join('/') });
+      mergedVietphrase.overlay.set(key, { ...existing, viet: [selected, ...others].join('/') });
     }
   }
   if (!phraseCache.has(userVietphrase)) phraseCache.set(userVietphrase, new Map());
@@ -377,6 +378,8 @@ export function convertText(
   phraseCache.get(userVietphrase)!.clear();
   phraseCache.get(userVietphrase)!.set(style, mergedVietphrase);
   }
+  const phraseInfo = (key: string) => mergedVietphrase!.overlay.get(key) ?? (key in mergedVietphrase!.base ? { viet: mergedVietphrase!.base[key], isCustom: true } : undefined);
+  const hasPhrase = (key: string) => mergedVietphrase!.overlay.has(key) || key in mergedVietphrase!.base;
 
   // Chuẩn bị danh sách luật nhân và đại từ (có merge custom nếu có)
   const activePronouns = options.customPronouns ? Object.entries(options.customPronouns) : SORTED_PRONOUNS;
@@ -413,8 +416,8 @@ export function convertText(
   const hanvietLines: string[] = [];
 
   let tokenIndex = 0;
-  const nameLengths = dictionaryLengths(customNamesMap);
-  const phraseLengths = dictionaryLengths(mergedVietphrase);
+  const nameLengths = dictionaryLengths(customNamesMap, customNamesMap.keys());
+  const phraseLengths = dictionaryLengths(mergedVietphrase, (function* () { yield* Object.keys(mergedVietphrase.base); yield* mergedVietphrase.overlay.keys(); })());
 
   let lastSearchIndex = 0;
   for (const p of sentenceChunks) {
@@ -435,7 +438,7 @@ export function convertText(
       const char = p[i];
       const lengths = [...new Set([...(nameLengths.get(char) || []), ...(phraseLengths.get(char) || [])])]
         .filter(length => length <= len - i).sort((a, b) => b - a);
-      const directLength = lengths.find(length => customNamesMap.has(p.slice(i, i + length)) || mergedVietphrase.has(p.slice(i, i + length))) || 0;
+      const directLength = lengths.find(length => customNamesMap.has(p.slice(i, i + length)) || hasPhrase(p.slice(i, i + length))) || 0;
       const preferredNameLength = options.prioritizeNames
         ? (nameLengths.get(char) || []).find(length => length <= len - i && customNamesMap.has(p.slice(i, i + length))) || 0 : 0;
 
@@ -625,8 +628,8 @@ export function convertText(
         }
 
         // 3. Khớp Vietphrase
-        if (mergedVietphrase.has(sub)) {
-          const vpInfo = mergedVietphrase.get(sub)!;
+        if (hasPhrase(sub)) {
+          const vpInfo = phraseInfo(sub)!;
           const { primary, alternatives } = parseVietphraseMeanings(vpInfo.viet);
           const hvList: string[] = [];
           const pyList: string[] = [];
@@ -680,8 +683,8 @@ export function convertText(
         const n = customNamesMap.get(singleChar)!;
         singleTranslation = titleCase(parseVietphraseMeanings(n.viet).primary);
         isCust = n.isCustom;
-      } else if (mergedVietphrase.has(singleChar)) {
-        const vp = mergedVietphrase.get(singleChar)!;
+      } else if (hasPhrase(singleChar)) {
+        const vp = phraseInfo(singleChar)!;
         const parsed = parseVietphraseMeanings(vp.viet);
         singleTranslation = parsed.primary;
         singleAlternatives = parsed.alternatives;
@@ -741,7 +744,7 @@ export function convertText(
   }
 
   return {
-    fullText: fullTextLines.join('\n\n'),
+    fullText: normalizeVietnameseTypography(fullTextLines.join('\n\n'), options.capitalizeSentences !== false),
     tokens: allTokens,
     hanvietText: hanvietLines.join('\n\n'),
     originalText: source,
@@ -754,15 +757,7 @@ export function convertText(
  */
 export function capitalizeFirstLetter(str: string): string {
   if (!str) return '';
-  const trimmed = str.trim();
-  const match = trimmed.match(/^([^a-zA-Zà-ỹÀ-Ỹ]*)([a-zA-Zà-ỹÀ-Ỹ])(.*)$/s);
-  if (match) {
-    const prefix = match[1];
-    const firstChar = match[2].toUpperCase();
-    const rest = match[3];
-    return prefix + firstChar + rest;
-  }
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return capitalizeLineStarts(str.trim());
 }
 
 /**

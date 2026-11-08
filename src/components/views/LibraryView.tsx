@@ -1,8 +1,11 @@
+import { chapterBelongsToNovel } from '../../utils/libraryMembership';
 import { readReaderState, type ReadingPosition } from '../../utils/readerState';
 import { EditLibraryChapterDialog } from '../EditLibraryChapterDialog';
 const LibraryReader = React.lazy(() => import('../LibraryReader').then(module => ({ default: module.LibraryReader })));
 import { readConvertPreference } from '../../utils/legacyCompatibility';
-import { TranslationStyleSelect } from '../TranslationStyleSelect';
+import { useBackgroundTasks } from '../../context/BackgroundTasks';
+import { capitalizeLineStarts } from '../../utils/vietnameseTypography';
+import { libraryPageAfterSwipe, type LibraryNovelPage } from '../../utils/libraryPageNavigation';
 /**
  * Tab Tủ Truyện & Quản Lý Tiểu Thuyết (Library View)
  * Hỗ trợ thêm mới truyện, chỉnh sửa thông tin (tên, tác giả, ảnh bìa, tóm tắt),
@@ -15,13 +18,12 @@ import { useApp, SavedChapter, NovelBook, parseChapterHeader, PRESET_COVERS } fr
 import { 
   BookMarked, 
   Trash2, 
-  BookOpen, 
   Search, 
   Download, 
   Plus, 
   ArrowRight, 
   Edit3, 
-  ChevronLeft, 
+  ChevronLeft,
   Book, 
   Sparkles, 
   X, 
@@ -34,7 +36,8 @@ import {
   ArrowUpDown,
   Folder,
   Heart,
-  Upload
+  Upload,
+  Star
 } from 'lucide-react';
 
 export const NOVEL_GENRES = [
@@ -67,6 +70,7 @@ export const NOVEL_GENRES = [
 ];
 
 export const LibraryView: React.FC = () => {
+  const background = useBackgroundTasks();
   const { 
     novelsList,
     addNovel,
@@ -75,6 +79,7 @@ export const LibraryView: React.FC = () => {
     toggleFavoriteNovel,
     savedChapters, 
     deleteSavedChapter, 
+    deleteSavedChapters,
     saveChapter,
     updateSavedChapter,
     setActiveTab, 
@@ -95,10 +100,14 @@ export const LibraryView: React.FC = () => {
   useEffect(() => { readReaderState().then(state => setReadingProgress(state.progress)).catch(console.error); }, [readerBookId]);
   const [activeSubView, setActiveSubView] = useState<'all' | 'favorites'>('all');
   const [selectedNovelId, setSelectedNovelId] = useState<string | null>(null);
+  const [selectedNovelPage, setSelectedNovelPage] = useState<LibraryNovelPage>('details');
+  const novelPageTouchStart = useRef<{ x: number; y: number } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [chapterSort, setChapterSort] = useState('name_asc');
   const [chapterPage, setChapterPage] = useState(1);
   const [chapterPageInput, setChapterPageInput] = useState('1');
+  const [selectedChapterIds, setSelectedChapterIds] = useState<Set<string>>(() => new Set());
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const chapterListRef = useRef<HTMLDivElement>(null);
 
   // Chế độ xem Tủ truyện: Ô lưới (tổng quan) hoặc Danh sách (chi tiết)
@@ -183,17 +192,18 @@ export const LibraryView: React.FC = () => {
   const [modalOriginalTitle, setModalOriginalTitle] = useState('');
   const [modalAuthor, setModalAuthor] = useState('');
   const [modalGenres, setModalGenres] = useState<string[]>(['Huyền huyễn']);
+  const [modalPublicationStatus, setModalPublicationStatus] = useState<'ongoing' | 'completed'>('ongoing');
   const [modalCoverUrl, setModalCoverUrl] = useState(PRESET_COVERS[0]);
   const [modalDescription, setModalDescription] = useState('');
+  const [ratingNovel, setRatingNovel] = useState<NovelBook | null>(null);
+  const [ratingValue, setRatingValue] = useState<0 | 1 | 2 | 3 | 4 | 5>(0);
+  const [ratingReview, setRatingReview] = useState('');
   const localCoverInputRef = useRef<HTMLInputElement>(null);
   
   // Custom Confirmation Modal for Deleting Novel (Fixes window.confirm blocked in iframe)
   const [novelToDelete, setNovelToDelete] = useState<NovelBook | null>(null);
-  const [toastState, setToastState] = useState<{ message: string; isError?: boolean } | null>(null);
-
   const showToast = (message: string, isError: boolean = false) => {
-    setToastState({ message, isError });
-    setTimeout(() => setToastState(null), 2500);
+    background.notify(message, isError);
   };
 
   const selectedNovel = novelsList.find(n => n.id === selectedNovelId);
@@ -204,7 +214,7 @@ export const LibraryView: React.FC = () => {
     try {
       const { downloadNovelEpub } = await import('../../utils/epubExport');
       // Export the whole novel, independent of search, sort and current chapter page.
-      const chapters = savedChapters.filter(chapter => chapter.novelId === selectedNovel.id || (!chapter.novelId && chapter.novelTitle === selectedNovel.title));
+      const chapters = savedChapters.filter(chapter => chapterBelongsToNovel(chapter, selectedNovel));
       await downloadNovelEpub(selectedNovel, chapters);
       showToast(`Đã xuất EPUB (${chapters.length} chương)`);
     } catch (error) {
@@ -239,6 +249,7 @@ export const LibraryView: React.FC = () => {
     setModalOriginalTitle('');
     setModalAuthor('');
     setModalGenres(['Huyền huyễn']);
+    setModalPublicationStatus('ongoing');
     setModalCoverUrl(PRESET_COVERS[Math.floor(Math.random() * PRESET_COVERS.length)]);
     setModalDescription('');
     setNovelModalOpen(true);
@@ -255,6 +266,7 @@ export const LibraryView: React.FC = () => {
       ? novel.genres 
       : (novel.genre ? novel.genre.split(/[·,/]/).map(g => g.trim()).filter(Boolean) : ['Huyền huyễn']);
     setModalGenres(genres.length > 0 ? genres : ['Huyền huyễn']);
+    setModalPublicationStatus(novel.publicationStatus || 'ongoing');
     setModalCoverUrl(novel.coverUrl || PRESET_COVERS[0]);
     setModalDescription(novel.description || '');
     setNovelModalOpen(true);
@@ -278,6 +290,7 @@ export const LibraryView: React.FC = () => {
         genre: genreString,
         coverUrl: modalCoverUrl.trim(),
         description: modalDescription.trim(),
+        publicationStatus: modalPublicationStatus,
       });
       showToast('Đã lưu thay đổi bộ truyện');
     } else {
@@ -289,12 +302,33 @@ export const LibraryView: React.FC = () => {
         genre: genreString,
         coverUrl: modalCoverUrl.trim(),
         description: modalDescription.trim(),
+        publicationStatus: modalPublicationStatus,
       });
       showToast('Đã tạo bộ truyện mới');
     }
 
     setNovelModalOpen(false);
     } catch (error) { showToast('Không lưu được truyện: ' + String(error), true); }
+  };
+
+  const handleOpenRatingModal = (novel: NovelBook) => {
+    setRatingNovel(novel);
+    setRatingValue(novel.rating || 0);
+    setRatingReview(novel.review || '');
+  };
+
+  const handleSaveRating = async () => {
+    if (!ratingNovel || ratingValue === 0) {
+      showToast('Vui lòng chọn từ 1 đến 5 sao.', true);
+      return;
+    }
+    try {
+      await updateNovel(ratingNovel.id, { rating: ratingValue, review: ratingReview.trim() });
+      showToast('Đã lưu đánh giá truyện');
+      setRatingNovel(null);
+    } catch (error) {
+      showToast('Không lưu được đánh giá: ' + String(error), true);
+    }
   };
 
   // Mở chương để dịch / đọc
@@ -316,7 +350,8 @@ export const LibraryView: React.FC = () => {
   // Tải file .txt của chương
   const handleDownloadTxt = (chap: SavedChapter, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    const content = `${chap.novelTitle || ''}\n${chap.title}\n\n${chap.vietphraseText || chap.originalText}`;
+    const chapterText = chap.vietphraseText.trim() ? capitalizeLineStarts(chap.vietphraseText) : chap.originalText;
+    const content = `${chap.novelTitle || ''}\n${chap.title}\n\n${chapterText}`;
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -328,7 +363,7 @@ export const LibraryView: React.FC = () => {
 
   // Lấy thời điểm cập nhật chương gần nhất của bộ truyện
   const getNovelLatestTimestamp = (novel: NovelBook) => {
-    const chaps = savedChapters.filter(c => c.novelId === novel.id || c.novelTitle === novel.title);
+    const chaps = savedChapters.filter(c => chapterBelongsToNovel(c, novel));
     if (chaps.length > 0) {
       return Math.max(...chaps.map(c => c.savedAt));
     }
@@ -362,8 +397,8 @@ export const LibraryView: React.FC = () => {
         return b.title.localeCompare(a.title, 'vi');
       }
       if (sortOption === 'chapters_count') {
-        const countA = savedChapters.filter(c => c.novelId === a.id || c.novelTitle === a.title).length;
-        const countB = savedChapters.filter(c => c.novelId === b.id || c.novelTitle === b.title).length;
+        const countA = savedChapters.filter(c => chapterBelongsToNovel(c, a)).length;
+        const countB = savedChapters.filter(c => chapterBelongsToNovel(c, b)).length;
         return countB - countA;
       }
       return 0;
@@ -374,13 +409,13 @@ export const LibraryView: React.FC = () => {
 
   // Lọc chương thuộc truyện đang chọn
   const novelChapters = savedChapters.filter(c => 
-    selectedNovelId ? (c.novelId === selectedNovelId || c.novelTitle === selectedNovel?.title) : true
+    selectedNovelId ? (!!selectedNovel && chapterBelongsToNovel(c, selectedNovel)) : true
   );
 
   const displayedChapters = useMemo(() => {
     const collator = new Intl.Collator('vi', { numeric: true, sensitivity: 'base' });
     return savedChapters
-      .filter(c => selectedNovelId && (c.novelId === selectedNovelId || c.novelTitle === selectedNovel?.title))
+      .filter(c => selectedNovelId && (!!selectedNovel && chapterBelongsToNovel(c, selectedNovel)))
       .filter(c => c.title.toLocaleLowerCase('vi').includes(searchTerm.trim().toLocaleLowerCase('vi')))
       .sort((a, b) => chapterSort === 'recent'
         ? b.savedAt - a.savedAt || collator.compare(a.title, b.title)
@@ -390,11 +425,25 @@ export const LibraryView: React.FC = () => {
   const currentChapterPage = Math.min(chapterPage, chapterPageCount);
   const chapterOffset = (currentChapterPage - 1) * 100;
   const pageChapters = displayedChapters.slice(chapterOffset, chapterOffset + 100);
+  const selectedChapterCount = selectedChapterIds.size;
+  const areAllVisibleChaptersSelected = displayedChapters.length > 0 && displayedChapters.every(chapter => selectedChapterIds.has(chapter.id));
 
   useEffect(() => {
     setChapterPage(1);
     setChapterPageInput('1');
   }, [selectedNovelId, searchTerm, chapterSort]);
+
+  useEffect(() => {
+    setSelectedChapterIds(new Set());
+  }, [selectedNovelId]);
+
+  useEffect(() => {
+    const availableIds = new Set(novelChapters.map(chapter => chapter.id));
+    setSelectedChapterIds(current => {
+      const next = new Set([...current].filter(id => availableIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [novelChapters]);
 
   useEffect(() => {
     setChapterPage(currentChapterPage);
@@ -406,6 +455,55 @@ export const LibraryView: React.FC = () => {
     setChapterPage(next);
     setChapterPageInput(String(next));
     chapterListRef.current?.scrollIntoView({ block: 'start' });
+  };
+
+  const toggleChapterSelection = (chapterId: string) => {
+    setSelectedChapterIds(current => {
+      const next = new Set(current);
+      next.has(chapterId) ? next.delete(chapterId) : next.add(chapterId);
+      return next;
+    });
+  };
+
+  const toggleAllVisibleChapterSelection = () => {
+    setSelectedChapterIds(current => {
+      const next = new Set(current);
+      if (areAllVisibleChaptersSelected) {
+        displayedChapters.forEach(chapter => next.delete(chapter.id));
+      } else {
+        displayedChapters.forEach(chapter => next.add(chapter.id));
+      }
+      return next;
+    });
+  };
+
+  const openNovelDetails = (novelId: string) => {
+    setSelectedNovelId(novelId);
+    setSelectedNovelPage('details');
+    setSearchTerm('');
+  };
+
+  const handleNovelPageTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    const start = novelPageTouchStart.current;
+    novelPageTouchStart.current = null;
+    if (!start || event.changedTouches.length === 0) return;
+    const deltaX = event.changedTouches[0].clientX - start.x;
+    const deltaY = event.changedTouches[0].clientY - start.y;
+    setSelectedNovelPage(page => libraryPageAfterSwipe(page, deltaX, deltaY));
+  };
+
+  const handleDeleteSelectedChapters = () => {
+    const chapterIds = [...selectedChapterIds];
+    if (!chapterIds.length) return;
+    setSelectedChapterIds(new Set());
+    setIsBulkDeleteOpen(false);
+    // The queued IndexedDB transaction continues without blocking the library UI.
+    void deleteSavedChapters(chapterIds)
+      .then(deleted => showToast(deleted ? `Đã xóa ${deleted} chương đã chọn` : 'Các chương đã chọn không còn trong thư viện.'))
+      .catch(error => {
+        setSelectedChapterIds(new Set(chapterIds));
+        showToast(error instanceof Error ? error.message : 'Không thể xóa các chương đã chọn.', true);
+      });
   };
 
   const handleSelectSort = (option: typeof sortOption) => {
@@ -426,7 +524,7 @@ export const LibraryView: React.FC = () => {
 
   const readerBook = novelsList.find(book => book.id === readerBookId);
   if (readerBook) return <React.Suspense fallback={<p className="p-6">Đang mở chế độ đọc…</p>}><LibraryReader
-    book={readerBook} chapters={savedChapters.filter(chapter => chapter.novelId === readerBook.id || (!chapter.novelId && chapter.novelTitle === readerBook.title))}
+    book={readerBook} chapters={savedChapters.filter(chapter => chapterBelongsToNovel(chapter, readerBook))}
     initialChapterId={readerChapterId} onClose={() => setReaderBookId(null)} onEdit={handleEditChapter} /></React.Suspense>;
 
   return (
@@ -435,7 +533,7 @@ export const LibraryView: React.FC = () => {
     }`}>
       {editingChapter && <EditLibraryChapterDialog chapter={editingChapter} onClose={() => setEditingChapter(null)} onSave={updates => updateSavedChapter(editingChapter.id, updates)} />}
       {/* Top Header: Subtabs & Integrated Toolbar */}
-      <div className={`shrink-0 p-2.5 sm:p-3 border-b flex items-center justify-between flex-wrap gap-2 transition-colors ${
+      {!selectedNovelId && <div className={`shrink-0 p-2.5 sm:p-3 border-b flex items-center justify-between flex-wrap gap-2 transition-colors ${
         isLight ? 'bg-surface border-line' : isSepia ? 'bg-surface border-line' : 'bg-surface border-line'
       }`}>
         {/* Subtab Toggle: Tất cả vs Yêu thích */}
@@ -625,16 +723,21 @@ export const LibraryView: React.FC = () => {
             <span>Thêm truyện</span>
           </button>
         </div>
-      </div>
+      </div>}
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className={`flex-1 overflow-y-auto ${selectedNovelId ? 'p-3 sm:p-5' : 'p-4'}`}>
         {/* VIEW 1: Chi tiết 1 bộ truyện (Khi đang chọn 1 truyện) */}
         {selectedNovelId && selectedNovel ? (
-          <div className="space-y-3 max-w-6xl mx-auto">
+          <div
+            className="min-h-full max-w-6xl mx-auto"
+            onTouchStart={event => { novelPageTouchStart.current = { x: event.touches[0].clientX, y: event.touches[0].clientY }; }}
+            onTouchEnd={handleNovelPageTouchEnd}
+          >
+          {selectedNovelPage === 'details' ? <div className="library-detail-page min-h-full space-y-3">
             {/* Nút quay lại */}
             <button
-              onClick={() => setSelectedNovelId(null)}
+              onClick={() => { setSelectedNovelId(null); setSearchTerm(''); }}
               className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors py-1"
             >
               <ChevronLeft size={16} />
@@ -642,7 +745,7 @@ export const LibraryView: React.FC = () => {
             </button>
 
             {/* Thẻ thông tin bộ truyện */}
-            <div className="library-book-card p-4 sm:p-5 rounded-2xl bg-surface border border-line flex flex-col sm:flex-row gap-4 items-start shadow-md">
+            <div className="library-book-card library-detail-card p-4 sm:p-5 rounded-2xl bg-surface border border-line flex flex-col sm:flex-row sm:flex-wrap gap-4 items-start shadow-md">
               <img
                 src={selectedNovel.coverUrl || PRESET_COVERS[0]}
                 alt={selectedNovel.title}
@@ -650,60 +753,83 @@ export const LibraryView: React.FC = () => {
               />
 
               <div className="library-book-info flex-1 min-w-0 space-y-2">
-                <div className="library-book-heading flex items-start justify-between gap-2 flex-wrap">
-                  <div>
+                <div className="library-book-heading flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
                     <h2 className="text-base sm:text-lg font-bold text-main">
                       {selectedNovel.title}
                     </h2>
                     {selectedNovel.originalTitle && (
-                      <p className="text-xs text-muted font-serif">
+                      <p className="text-xs text-muted font-reading">
                         {selectedNovel.originalTitle}
                       </p>
                     )}
                   </div>
 
-                  <div className="library-book-actions flex flex-wrap items-center gap-1.5">
+                  <div className="library-book-actions inline-flex shrink-0 items-center gap-1" role="toolbar" aria-label="Thao tác với truyện">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditNovelModal(selectedNovel)}
+                      className={`library-status-action ${selectedNovel.publicationStatus === 'completed' ? 'is-completed' : ''}`}
+                      aria-label={`Trạng thái: ${selectedNovel.publicationStatus === 'completed' ? 'Đã hoàn thành' : 'Đang ra'}. Mở sửa thông tin truyện`}
+                      title="Chỉnh trạng thái trong Sửa thông tin"
+                    >
+                      {selectedNovel.publicationStatus === 'completed' ? 'Đã hoàn thành' : 'Đang ra'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRatingModal(selectedNovel)}
+                      className={`library-rating-action ${selectedNovel.rating ? 'is-rated' : ''}`}
+                      aria-label={selectedNovel.rating ? `Đánh giá hiện tại ${selectedNovel.rating} trên 5 sao. Mở để sửa` : 'Đánh giá truyện'}
+                      title={selectedNovel.rating ? `${selectedNovel.rating}/5 sao${selectedNovel.review ? ` · ${selectedNovel.review}` : ''}` : 'Đánh giá truyện'}
+                    >
+                      <Star size={14} className={selectedNovel.rating ? 'fill-current' : ''} />
+                      <span>{selectedNovel.rating ? `${selectedNovel.rating}/5` : '0/5'}</span>
+                    </button>
+
                     <button
                       onClick={() => {
                         void toggleFavoriteNovel(selectedNovel.id).catch(error => showToast(String(error), true));
                         showToast(selectedNovel.isFavorite ? `Đã bỏ thích "${selectedNovel.title}"` : `Đã thêm "${selectedNovel.title}" vào Yêu thích`);
                       }}
-                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                      className={`library-icon-action ${
                         selectedNovel.isFavorite
-                          ? 'bg-rose-950/60 text-rose-400 border-rose-800/80 shadow-xs'
-                          : 'bg-raised hover:bg-hover text-main border-line'
+                          ? 'is-active text-rose-400'
+                          : ''
                       }`}
-                      title={selectedNovel.isFavorite ? "Bỏ yêu thích" : "Yêu thích truyện này"}
+                      aria-label={selectedNovel.isFavorite ? "Bỏ yêu thích" : "Thêm vào yêu thích"}
+                      aria-pressed={Boolean(selectedNovel.isFavorite)}
+                      title={selectedNovel.isFavorite ? "Bỏ yêu thích" : "Thêm vào yêu thích"}
                     >
-                      <Heart size={13} className={selectedNovel.isFavorite ? "fill-rose-500 text-rose-500" : ""} />
-                      <span>{selectedNovel.isFavorite ? 'Đã thích' : 'Yêu thích'}</span>
+                      <Heart size={17} className={selectedNovel.isFavorite ? "fill-current" : ""} />
                     </button>
 
                     <button
                       onClick={() => handleOpenEditNovelModal(selectedNovel)}
-                      className="flex items-center gap-1 px-2.5 py-1.5 bg-raised hover:bg-hover text-main rounded-lg text-xs font-medium border border-line transition-colors cursor-pointer"
-                      title="Chỉnh sửa thông tin truyện"
+                      className="library-icon-action"
+                      aria-label="Sửa thông tin truyện"
+                      title="Sửa thông tin truyện"
                     >
-                      <Edit3 size={13} />
-                      <span>Sửa thông tin</span>
+                      <Edit3 size={17} />
                     </button>
 
                     <button
                       onClick={handleExportEpub}
                       disabled={isExportingEpub || novelChapters.length === 0}
-                      className="studio-action"
-                      title="Xuất tất cả chương đã lưu thành EPUB"
+                      className="library-icon-action"
+                      aria-label={isExportingEpub ? "Đang xuất EPUB" : "Xuất EPUB"}
+                      title={novelChapters.length === 0 ? "Chưa có chương để xuất EPUB" : isExportingEpub ? "Đang xuất EPUB" : "Xuất EPUB"}
                     >
-                      <Download size={14} strokeWidth={1.75} />
-                      <span>{isExportingEpub ? 'Đang xuất...' : 'Xuất EPUB'}</span>
+                      <Download size={17} strokeWidth={1.75} />
                     </button>
 
                     <button
                       onClick={() => setNovelToDelete(selectedNovel)}
-                      className="p-1.5 text-muted hover:text-rose-400 hover:bg-raised rounded-lg transition-colors cursor-pointer"
-                      title="Xóa bộ truyện"
+                      className="library-icon-action library-icon-action-danger"
+                      aria-label="Xóa truyện"
+                      title="Xóa truyện"
                     >
-                      <Trash2 size={15} />
+                      <Trash2 size={17} />
                     </button>
                   </div>
                 </div>
@@ -725,32 +851,94 @@ export const LibraryView: React.FC = () => {
                   <span className="truncate">/local/Hermes/Lib/{selectedNovel.title}/</span>
                 </div>
 
-                <button disabled={!novelChapters.length} onClick={() => { setReaderChapterId(undefined); setReaderBookId(selectedNovel.id); }} className="studio-action studio-action-primary disabled:opacity-40"><BookOpen size={16} />{readingProgress[selectedNovel.id] ? 'Đọc tiếp' : 'Đọc truyện'}</button>
-                {readingProgress[selectedNovel.id] && <p className="text-xs text-muted">Lần đọc gần nhất: {savedChapters.find(chapter => chapter.id === readingProgress[selectedNovel.id].chapterId)?.title || 'Chương đã lưu'} · {Math.round(readingProgress[selectedNovel.id].scrollRatio * 100)}%</p>}
-                <TranslationStyleSelect value={selectedNovel.translationStyle || 'auto'} tags={selectedNovel.genres?.length ? selectedNovel.genres : [selectedNovel.genre || '']} onChange={translationStyle => updateNovel(selectedNovel.id, { translationStyle })} />
-                {selectedNovel.description && (
-                  <p className="text-xs text-muted leading-relaxed line-clamp-3 bg-canvas/60 p-2.5 rounded-xl border border-line/80">
-                    {selectedNovel.description}
-                  </p>
-                )}
               </div>
+
+              <section className="library-book-description w-full basis-full space-y-1.5" aria-labelledby="library-book-description-title">
+                <h3 id="library-book-description-title" className="text-xs font-semibold text-main">Giới thiệu</h3>
+                <div className="h-40 overflow-y-auto whitespace-pre-wrap text-xs text-muted leading-relaxed bg-canvas/60 p-2.5 rounded-xl border border-line/80">
+                  {selectedNovel.description || 'Chưa có nội dung giới thiệu.'}
+                </div>
+              </section>
+            </div>
+
+            <div className="library-detail-actions grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => { setSelectedNovelPage('chapters'); setSearchTerm(''); }}
+                className="studio-action min-h-11"
+              >
+                Danh sách chương
+              </button>
+              <button
+                type="button"
+                title={readingProgress[selectedNovel.id] ? `Lần đọc gần nhất: ${savedChapters.find(chapter => chapter.id === readingProgress[selectedNovel.id].chapterId)?.title || 'Chương đã lưu'} · ${Math.round(readingProgress[selectedNovel.id].scrollRatio * 100)}%` : undefined}
+                disabled={!novelChapters.length}
+                onClick={() => { setReaderChapterId(undefined); setReaderBookId(selectedNovel.id); }}
+                className="studio-action studio-action-primary min-h-11 disabled:opacity-40"
+              >
+                {readingProgress[selectedNovel.id] ? 'Đọc tiếp' : 'Đọc truyện'}
+              </button>
+            </div>
+          </div> : <div className="library-chapters-page min-h-full space-y-3">
+            <div className="grid min-h-9 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+              <button
+                type="button"
+                onClick={() => { setSelectedNovelPage('details'); setSearchTerm(''); }}
+                aria-label="Về thông tin truyện; cũng có thể vuốt sang phải"
+                title="Bấm hoặc vuốt sang phải để về thông tin truyện"
+                className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent"
+              >
+                <ChevronLeft size={16} />
+                <span>Thông tin truyện</span>
+              </button>
+              <h2 className="min-w-0 truncate text-center text-sm font-semibold text-main">{selectedNovel.title}</h2>
+              <span className="w-4" aria-hidden="true" />
             </div>
 
             {/* Danh sách chương của bộ truyện */}
-            <div ref={chapterListRef} className="space-y-2 pt-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-muted px-1">
-                Danh sách chương đã lưu ({novelChapters.length})
-              </h3>
-
-              <div className="flex items-center justify-between flex-wrap gap-2 text-xs">
-                <select aria-label="Sắp xếp chương" value={chapterSort} onChange={e => setChapterSort(e.target.value)} className="bg-surface text-main border border-line rounded-lg px-2 py-1.5">
-                  <option value="name_asc">Tên chương A–Z</option>
-                  <option value="name_desc">Tên chương Z–A</option>
-                  <option value="recent">Mới thêm</option>
-                </select>
+            <div ref={chapterListRef} className="space-y-2">
+              <div className="library-chapter-toolbar flex flex-col items-stretch gap-2 text-xs rounded-xl border border-line bg-surface p-2">
+                <div className="library-chapter-primary-row flex min-w-0 items-center gap-2">
+                  <label className="flex shrink-0 items-center gap-1.5 text-muted cursor-pointer select-none" title="Chọn hoặc bỏ chọn toàn bộ chương đang hiển thị">
+                    <input
+                      type="checkbox"
+                      aria-label="Chọn tất cả chương đang hiển thị"
+                      checked={areAllVisibleChaptersSelected}
+                      onChange={toggleAllVisibleChapterSelection}
+                      disabled={displayedChapters.length === 0}
+                      className="w-4 h-4 rounded-full border-line bg-raised text-accent focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:cursor-not-allowed"
+                    />
+                    {selectedChapterCount > 0 && <span className="min-w-4 text-[11px] tabular-nums">{selectedChapterCount}</span>}
+                  </label>
+                  <div className="relative ml-auto w-36 min-w-0 shrink sm:w-56">
+                    <Search size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted" />
+                    <input type="search" aria-label="Tìm chương" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} placeholder="Tìm chương…" className="h-8 w-full rounded-lg border border-line bg-canvas pl-6 pr-7 text-[11px] text-main outline-none focus:border-accent" />
+                    <button type="button" aria-label="Xóa toàn bộ nội dung tìm kiếm" title="Xóa tìm kiếm" disabled={!searchTerm} onClick={() => setSearchTerm('')} className="absolute right-1.5 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted hover:text-main disabled:opacity-35"><X size={12} /></button>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <label className="relative grid h-8 w-8 place-items-center rounded-lg border border-line bg-raised text-muted hover:bg-hover hover:text-main" title="Sắp xếp chương">
+                      <ArrowUpDown size={14} aria-hidden="true" />
+                      <select aria-label="Sắp xếp chương" value={chapterSort} onChange={e => setChapterSort(e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0">
+                        <option value="name_asc">Tên chương A–Z</option>
+                        <option value="name_desc">Tên chương Z–A</option>
+                        <option value="recent">Mới thêm</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      aria-label={`Xóa ${selectedChapterCount} chương đã chọn`}
+                      onClick={() => setIsBulkDeleteOpen(true)}
+                      disabled={selectedChapterCount === 0}
+                      className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-raised text-danger hover:bg-hover disabled:cursor-not-allowed disabled:opacity-35"
+                      title="Xóa các chương đã chọn"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
                 {displayedChapters.length > 0 && (
-                  <form className="flex items-center flex-wrap gap-2" onSubmit={e => { e.preventDefault(); goToChapterPage(Number(chapterPageInput)); }}>
-                    <span className="text-muted">{chapterOffset + 1}–{Math.min(chapterOffset + 100, displayedChapters.length)}/{displayedChapters.length} chương · 100 chương/tập</span>
+                  <form className="library-chapter-pagination flex items-center gap-1.5 shrink-0" onSubmit={e => { e.preventDefault(); goToChapterPage(Number(chapterPageInput)); }}>
+                    <span className="text-muted">{chapterOffset + 1}–{Math.min(chapterOffset + 100, displayedChapters.length)}/{displayedChapters.length} chương</span>
                     <button type="button" aria-label="Tập trước" disabled={currentChapterPage === 1} onClick={() => goToChapterPage(currentChapterPage - 1)} className="px-2 py-1.5 rounded bg-raised text-main disabled:opacity-30">‹</button>
                     <label className="flex items-center gap-1 text-muted">Tập
                       <input aria-label="Số tập" type="number" min={1} max={chapterPageCount} step={1} required value={chapterPageInput} onChange={e => setChapterPageInput(e.target.value)} className="w-16 px-2 py-1 rounded border border-line bg-surface text-main" />
@@ -790,6 +978,15 @@ export const LibraryView: React.FC = () => {
                       onClick={() => handleOpenChapter(chap)}
                       className="library-chapter-row px-2 py-1 rounded-lg bg-surface border border-line hover:border-accent/50 cursor-pointer transition-all flex items-center justify-between gap-1.5 text-xs group"
                     >
+                      <label className="shrink-0 flex items-center cursor-pointer" onClick={event => event.stopPropagation()} title={`Chọn ${chap.title}`}>
+                        <input
+                          type="checkbox"
+                          checked={selectedChapterIds.has(chap.id)}
+                          onChange={() => toggleChapterSelection(chap.id)}
+                          aria-label={`Chọn ${chap.title}`}
+                          className="w-4 h-4 rounded-full border-line bg-raised text-accent focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                        />
+                      </label>
                       <span className="text-muted tabular-nums shrink-0 text-[10px]" title="Số thứ tự">{chapterOffset + index + 1}.</span>
                       <div className="flex-1 min-w-0">
                         {/* Chương luôn đi kèm tên chương bên cạnh */}
@@ -828,6 +1025,7 @@ export const LibraryView: React.FC = () => {
                 </div>
               )}
             </div>
+          </div>}
           </div>
         ) : (
           /* VIEW 2: Danh Sách Các Bộ Truyện (Tất cả hoặc Yêu thích) */
@@ -860,7 +1058,7 @@ export const LibraryView: React.FC = () => {
             /* DẠNG 1: Ô LƯỚI (TỔNG QUAN) */
             <div data-novel-grid className="grid grid-cols-1 @min-[340px]/library:grid-cols-2 @min-[600px]/library:grid-cols-3 @min-[900px]/library:grid-cols-4 gap-3">
               {sortedAndFilteredNovels.map((novel) => {
-                const chaps = savedChapters.filter(c => c.novelId === novel.id || c.novelTitle === novel.title);
+                const chaps = savedChapters.filter(c => chapterBelongsToNovel(c, novel));
                 const count = chaps.length;
                 const latestChap = chaps.length > 0 ? chaps.reduce((prev, curr) => curr.savedAt > prev.savedAt ? curr : prev) : null;
                 const latestParsed = latestChap ? parseChapterHeader(latestChap.title) : null;
@@ -868,7 +1066,7 @@ export const LibraryView: React.FC = () => {
                 return (
                   <div
                     key={novel.id}
-                    onClick={() => setSelectedNovelId(novel.id)}
+                    onClick={() => openNovelDetails(novel.id)}
                     className="rounded-2xl bg-surface border border-line hover:border-accent/50 cursor-pointer transition-all flex flex-col group overflow-hidden shadow-sm hover:shadow-cyan-950/30"
                   >
                     {/* Bìa sách kèm Huy hiệu số chương, thể loại & Nút Yêu thích */}
@@ -948,7 +1146,7 @@ export const LibraryView: React.FC = () => {
             /* DẠNG 2: DANH SÁCH (CHI TIẾT) */
             <div className="space-y-3">
               {sortedAndFilteredNovels.map((novel) => {
-                const chaps = savedChapters.filter(c => c.novelId === novel.id || c.novelTitle === novel.title);
+                const chaps = savedChapters.filter(c => chapterBelongsToNovel(c, novel));
                 const count = chaps.length;
                 const latestChap = chaps.length > 0 ? chaps.reduce((prev, curr) => curr.savedAt > prev.savedAt ? curr : prev) : null;
                 const latestParsed = latestChap ? parseChapterHeader(latestChap.title) : null;
@@ -956,7 +1154,7 @@ export const LibraryView: React.FC = () => {
                 return (
                   <div
                     key={novel.id}
-                    onClick={() => setSelectedNovelId(novel.id)}
+                    onClick={() => openNovelDetails(novel.id)}
                     className={`p-3.5 rounded-2xl border hover:border-accent/50 cursor-pointer transition-all flex flex-col sm:flex-row gap-3.5 group shadow-sm ${
                       isLight 
                         ? 'bg-surface border-line text-main' 
@@ -987,7 +1185,7 @@ export const LibraryView: React.FC = () => {
                               {novel.title}
                             </h3>
                             {novel.originalTitle && (
-                              <p className="text-[11px] opacity-70 font-serif">
+                              <p className="text-[11px] opacity-70 font-reading">
                                 {novel.originalTitle}
                               </p>
                             )}
@@ -1129,7 +1327,7 @@ export const LibraryView: React.FC = () => {
                     value={modalOriginalTitle}
                     onChange={(e) => setModalOriginalTitle(e.target.value)}
                     placeholder="Ví dụ: 斗破苍穹, 凡人修仙传..."
-                    className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-main font-serif focus:outline-none focus:border-accent"
+                            className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-main font-reading focus:outline-none focus:border-accent"
                   />
                 </div>
 
@@ -1145,6 +1343,21 @@ export const LibraryView: React.FC = () => {
                     className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-main focus:outline-none focus:border-accent"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label htmlFor="novel-publication-status" className="block text-muted font-medium mb-1">
+                  Trạng thái truyện
+                </label>
+                <select
+                  id="novel-publication-status"
+                  value={modalPublicationStatus}
+                  onChange={(event) => setModalPublicationStatus(event.target.value as 'ongoing' | 'completed')}
+                  className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-main focus:outline-none focus:border-accent"
+                >
+                  <option value="ongoing">Đang ra</option>
+                  <option value="completed">Đã hoàn thành</option>
+                </select>
               </div>
 
               {/* Multi-genre Checkbox Selection */}
@@ -1270,28 +1483,113 @@ export const LibraryView: React.FC = () => {
 
               <button
                 onClick={handleSaveNovel}
-                className="px-4 py-2 bg-accent hover:bg-accent text-main rounded-xl text-xs font-semibold shadow-xs flex items-center gap-1.5"
+                className="px-4 py-2 bg-accent hover:bg-accent text-main rounded-xl text-xs font-semibold shadow-xs"
               >
-                <Check size={14} />
-                <span>{editingNovelId ? 'Lưu thay đổi' : 'Tạo truyện'}</span>
+                {editingNovelId ? 'Lưu thay đổi' : 'Tạo truyện'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Toast Notification Banner */}
-      {toastState && (
-        <div 
-          className={`absolute top-14 left-1/2 -translate-x-1/2 z-50 text-xs py-1.5 px-4 rounded-full shadow-xl border animate-in fade-in slide-in-from-top-2 duration-150 pointer-events-none flex items-center gap-1.5 ${
-            toastState.isError
-              ? 'bg-surface/95 text-rose-500 border-rose-500/80 font-bold ring-1 ring-rose-500/50 shadow-rose-950/50'
-              : 'bg-surface/95 text-emerald-400 border-emerald-500/60 font-medium ring-1 ring-emerald-500/40 shadow-emerald-950/40'
-          }`}
+      {ratingNovel && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setRatingNovel(null); }}
         >
-          <span className={toastState.isError ? 'text-rose-500 font-bold tracking-wide' : 'text-emerald-400 font-semibold'}>
-            {toastState.message}
-          </span>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="novel-rating-title"
+            className="novel-rating-dialog w-full max-w-md rounded-2xl bg-surface border border-line p-5 text-main shadow-2xl"
+            onKeyDown={(event) => { if (event.key === 'Escape') setRatingNovel(null); }}
+          >
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-line">
+              <div className="min-w-0">
+                <h3 id="novel-rating-title" className="font-bold text-sm">Đánh giá truyện</h3>
+                <p className="mt-1 truncate text-xs text-muted">{ratingNovel.title}</p>
+              </div>
+              <button type="button" className="library-icon-action" aria-label="Đóng" onClick={() => setRatingNovel(null)}>
+                <X size={16} />
+              </button>
+            </div>
+
+            <fieldset className="mt-5">
+              <legend className="w-full text-center text-xs text-muted">
+                {ratingValue ? `${ratingValue}/5 sao` : 'Chọn số sao'}
+              </legend>
+              <div className="novel-rating-stars mt-3 flex items-center justify-center gap-2" role="radiogroup" aria-label="Điểm đánh giá">
+                {([1, 2, 3, 4, 5] as const).map(star => (
+                  <button
+                    key={star}
+                    type="button"
+                    role="radio"
+                    aria-checked={ratingValue === star}
+                    aria-label={`${star} sao`}
+                    autoFocus={star === (ratingValue || 1)}
+                    className={star <= ratingValue ? 'is-selected' : ''}
+                    onClick={() => setRatingValue(star)}
+                  >
+                    <Star size={30} className={star <= ratingValue ? 'fill-current' : ''} />
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <label htmlFor="novel-rating-review" className="mt-5 block text-xs font-medium text-muted">Nhận xét</label>
+            <textarea
+              id="novel-rating-review"
+              value={ratingReview}
+              onChange={(event) => setRatingReview(event.target.value)}
+              maxLength={1000}
+              placeholder="Viết đánh giá của bạn về truyện..."
+              className="mt-1.5 h-28 w-full resize-none rounded-xl border border-line bg-canvas p-3 text-sm text-main placeholder-subtle focus:border-accent focus:outline-none"
+            />
+            <div className="mt-1 text-right text-[10px] text-muted">{ratingReview.length}/1000</div>
+
+            <div className="mt-4 flex justify-end gap-2 border-t border-line pt-4">
+              <button type="button" className="studio-action" onClick={() => setRatingNovel(null)}>Hủy</button>
+              <button type="button" className="studio-action studio-action-primary" disabled={ratingValue === 0} onClick={handleSaveRating}>Lưu đánh giá</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Toast Notification Banner */}
+      {isBulkDeleteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl bg-surface border border-line p-5 text-main shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-raised border border-line text-danger flex items-center justify-center shrink-0">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-main">Xóa chương đã chọn?</h3>
+                <p className="text-xs text-muted mt-0.5">Hành động này không thể hoàn tác.</p>
+              </div>
+            </div>
+            <p className="text-xs text-main leading-relaxed bg-canvas/80 p-3 rounded-xl border border-line">
+              Bạn sắp xóa <strong className="text-accent">{selectedChapterCount} chương</strong> đã chọn khỏi bộ truyện này.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
+              <button
+                type="button"
+                onClick={() => setIsBulkDeleteOpen(false)}
+                className="px-4 py-2 bg-raised hover:bg-hover text-main rounded-xl text-xs font-medium transition-colors cursor-pointer"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteSelectedChapters}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 size={13} />
+                <span>Xác nhận xóa</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1300,7 +1598,7 @@ export const LibraryView: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="w-full max-w-sm rounded-2xl bg-surface border border-line p-5 text-main shadow-2xl space-y-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-800/60 text-rose-400 flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 rounded-xl bg-raised border border-line text-danger flex items-center justify-center shrink-0">
                 <Trash2 size={20} />
               </div>
               <div>

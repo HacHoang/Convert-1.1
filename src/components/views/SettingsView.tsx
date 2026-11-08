@@ -28,11 +28,10 @@ export const SettingsView: React.FC = () => {
     importAllDatabasesJson,
     resetDictionaries 
   } = useApp();
+  const background = useBackgroundTasks();
 
   const [testSpeechPlaying, setTestSpeechPlaying] = useState(false);
-  const [testSpeechError, setTestSpeechError] = useState('');
   useEffect(() => () => speechService.stop(), []);
-  const [backupSuccess, setBackupSuccess] = useState(false);
 
   const handleTestTTS = () => {
     if (testSpeechPlaying) {
@@ -41,19 +40,15 @@ export const SettingsView: React.FC = () => {
       return;
     }
     const sampleText = 'Xin chào, đây là giọng đọc thử nghiệm của ứng dụng Hermes.';
-    setTestSpeechError('');
     setTestSpeechPlaying(true);
     speechService.speak(sampleText, settings.ttsRate, {
       onEnd: () => setTestSpeechPlaying(false),
-      onError: error => { setTestSpeechPlaying(false); setTestSpeechError(String(error)); },
+      onError: error => { setTestSpeechPlaying(false); background.notify(String(error), true); },
     });
   };
 
-  const background = useBackgroundTasks();
   const backupBusy = background.running;
-  const [backupError, setBackupError] = useState('');
   const handleExportFullBackup = async () => {
-    setBackupError('');
     try {
       const json = await exportAllDatabasesJson();
       const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
@@ -62,9 +57,8 @@ export const SettingsView: React.FC = () => {
       link.download = `hermes_backup_${Date.now()}.json`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
-      setBackupSuccess(true);
-      setTimeout(() => setBackupSuccess(false), 2000);
-    } catch (error) { setBackupError(String(error)); background.reportResult(String(error), true); }
+      background.reportResult('Đã xuất file sao lưu thành công');
+    } catch (error) { background.reportResult(String(error), true); }
   };
 
   const handleRestoreBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -73,13 +67,11 @@ export const SettingsView: React.FC = () => {
     if (!file) return;
     if (!window.confirm('Thay thế các phần dữ liệu có trong bản sao lưu? Các phần không có trong bản cũ được giữ nguyên.')) { input.value = ''; return; }
     background.run('Khôi phục bản sao lưu', async () => {
-      setBackupSuccess(false);
-      setBackupError('');
       try {
         const result = await importAllDatabasesJson(await file.text());
         if (!result.success) throw new Error(result.message);
         background.reportResult(result.message);
-      } catch (error) { setBackupError(String(error)); background.reportResult(String(error), true); }
+      } catch (error) { background.reportResult(String(error), true); }
       finally { input.value = ''; }
     });
   };
@@ -92,6 +84,38 @@ export const SettingsView: React.FC = () => {
           <Sparkles size={15} className="text-accent" />
           <span>Quy tắc dịch thuật</span>
         </div>
+
+        <div className="block py-2 border-b border-line/60">
+          <span className="text-xs font-medium text-main block mb-1">Lõi dịch Quick Translator</span>
+          <span className="text-[11px] text-muted block">
+            Hermes dùng duy nhất thuật toán đã port từ TranslatorEngine 1.4; không cần DLL/.NET khi chạy.
+          </span>
+        </div>
+            <label className="block py-2 border-b border-line/60">
+              <span className="text-xs font-medium text-main block mb-1.5">Thuật toán dịch</span>
+              <select
+                value={settings.quickTranslationAlgorithm}
+                onChange={event => updateSettings({ quickTranslationAlgorithm: Number(event.target.value) as 0 | 1 | 2 })}
+                className="w-full rounded-lg border border-line bg-canvas px-3 py-2 text-xs text-main"
+              >
+                <option value={0}>Ưu tiên cụm VietPhrase dài</option>
+                <option value={1}>Dịch từ trái sang phải</option>
+                <option value={2}>Ưu tiên cụm VietPhrase dài (từ 4 chữ)</option>
+              </select>
+            </label>
+            <label className="block py-2 border-b border-line/60">
+              <span className="text-xs font-medium text-main block mb-1.5">Hiển thị VietPhrase một nghĩa</span>
+              <select
+                value={settings.quickVietphraseWrapType}
+                onChange={event => updateSettings({ quickVietphraseWrapType: Number(event.target.value) as 0 | 1 | 2 | 3 })}
+                className="w-full rounded-lg border border-line bg-canvas px-3 py-2 text-xs text-main"
+              >
+                <option value={0}>Không dùng [...]</option>
+                <option value={1}>Luôn dùng [...] (cả Hán Việt)</option>
+                <option value={2}>Luôn dùng [...] (trừ Hán Việt)</option>
+                <option value={3}>Chỉ dùng [...] nếu có hơn một nghĩa</option>
+              </select>
+            </label>
 
         <div className="flex items-center justify-between py-2 border-b border-line/60">
           <div>
@@ -108,8 +132,8 @@ export const SettingsView: React.FC = () => {
 
         <div className="flex items-center justify-between py-2">
           <div>
-            <span className="text-xs font-medium text-main block">Tự động viết hoa đầu câu</span>
-            <span className="text-[11px] text-muted">Viết hoa ký tự đầu sau dấu câu</span>
+            <span className="text-xs font-medium text-main block">Tự động viết hoa đầu câu và đầu dòng</span>
+            <span className="text-[11px] text-muted">Bỏ qua dấu, số và ký hiệu để viết hoa chữ cái đầu tiên</span>
           </div>
           <input
             type="checkbox"
@@ -139,7 +163,6 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
 
-        {testSpeechError && <p role="alert" className="text-xs text-rose-400">{testSpeechError}</p>}
         <div className="pt-1">
           <div>
             <div className="flex justify-between text-xs text-muted mb-1.5">
@@ -214,14 +237,6 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
 
-        {backupBusy && <p role="status" className="text-xs text-muted">Đang xử lý dữ liệu…</p>}
-        {backupError && <p role="alert" className="text-xs text-rose-400">{backupError}</p>}
-        {backupSuccess && (
-          <div className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/50 p-2.5 rounded-lg flex items-center gap-1.5">
-            <Check size={14} />
-            <span>Đã xuất file sao lưu thành công</span>
-          </div>
-        )}
       </div>
     </div>
   );

@@ -12,6 +12,9 @@ import { resolveTranslationStyle, type TranslationStyleChoice } from '../../util
 import { TranslationStyleSelect } from '../TranslationStyleSelect';
 import { chapterFileNames } from '../../utils/chapterFileNames';
 import { chapterIdsOutsidePositionRange } from '../../utils/chapterRange';
+import { useBackgroundTasks, type BackgroundTaskControl } from '../../context/BackgroundTasks';
+import { quickTranslateOneMeaningForBatch } from '../../utils/quickTranslatorPort';
+import { clearBatchDraft, deleteBatchDraftChapters, readBatchDraft, replaceBatchDraft, saveBatchDraftChapter, saveBatchDraftChapters, saveBatchDraftMeta } from '../../utils/indexedDbStorage';
 /**
  * Màn hình Dịch hàng loạt nhiều chương (Batch Translation View)
  * Thiết kế tối ưu riêng cho giao diện máy tính / PC
@@ -22,15 +25,16 @@ import { chapterIdsOutsidePositionRange } from '../../utils/chapterRange';
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { ConfirmDeleteDialog } from '../ConfirmDeleteDialog';
 import { useApp } from '../../context/AppContext';
-import { convertText } from '../../utils/translatorEngine';
 import {
   BatchTranslationItem,
   parseMultipleFiles,
   extractChapterNumber,
 } from '../../utils/chapterSplitter';
 import {
-  downloadChapterFiles,
+  downloadChaptersAsZip,
+  saveChaptersToUserFolder,
 } from '../../utils/batchExportUtils';
+import type { ChapterExportFormat } from '../../utils/chapterFileNames';
 import {
   FolderUp,
   FileText,
@@ -49,9 +53,20 @@ import {
 } from 'lucide-react';
 
 const PAGE_SIZE = 50;
+const BATCH_DRAFT_VERSION = 1;
+
+type BatchDraftMeta = {
+  version: number;
+  chapterIds: string[];
+  excludedChapterIds?: string[];
+  reviewed?: boolean;
+  selectedNovelId?: string;
+};
 
 export const BatchTranslateView: React.FC = () => {
+  const background = useBackgroundTasks();
   const {
+    activeTab,
     namesList, namesMainMap, phienAmMap, dictionaryStyleRevision,
     vietphraseMap,
     luatNhanMap,
@@ -72,7 +87,6 @@ export const BatchTranslateView: React.FC = () => {
   const [saveBusy, setSaveBusy] = useState(false);
   const [newBookOpen, setNewBookOpen] = useState(false);
   const [pendingSave, setPendingSave] = useState<{ book: string | Omit<NovelBook, 'id' | 'createdAt' | 'updatedAt'>; chapters: ChapterInput[]; matchIds: string[] } | null>(null);
-  const [novelTitle, setNovelTitle] = useState<string>('Tiểu Thuyết Mới');
   const [selectedNovelId, setSelectedNovelId] = useState<string>('');
   const [startChapterNum] = useState<number>(1);
   const styleChoice = settings.translationStyle || 'neutral';
@@ -80,15 +94,14 @@ export const BatchTranslateView: React.FC = () => {
   const styleNovel = novelsList.find(novel => novel.id === selectedNovelId);
   const styleTags = styleNovel?.genres?.length ? styleNovel.genres : [styleNovel?.genre || ''];
   const translationStyle = styleChoice;
-  const [exportFormat, setExportFormat] = useState<'txt' | 'docx'>('txt');
+  const [exportFormat, setExportFormat] = useState<ChapterExportFormat>('txt');
 
   // Danh sách chương
   const [chapters, setChapters] = useState<BatchTranslationItem[]>([]);
   const [excludedChapterIds, setExcludedChapterIds] = useState<Set<string>>(() => new Set());
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(() => new Set());
   const completedChapters = useMemo(() => chapters.filter(chapter => chapter.status === 'done' && chapter.translatedContent), [chapters]);
   const selectedChapters = useMemo(() => completedChapters.filter(chapter => !excludedChapterIds.has(chapter.id)), [completedChapters, excludedChapterIds]);
-  const allChaptersSelected = completedChapters.length > 0 && selectedChapters.length === completedChapters.length;
-  const toggleAllChapters = () => setExcludedChapterIds(allChaptersSelected ? new Set(completedChapters.map(chapter => chapter.id)) : new Set());
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -97,30 +110,63 @@ export const BatchTranslateView: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const cancelRequestedRef = useRef<boolean>(false);
-  const isPausedRef = useRef<boolean>(false);
+  const batchWorkerRef = useRef<Worker | null>(null);
+  const abortBatchRunRef = useRef<(() => void) | null>(null);
+  const batchRunIdRef = useRef(0);
+  const draftQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [draftReady, setDraftReady] = useState(false);
 
   // Trạng thái xuất file / lưu
   const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [exportMessage, setExportMessage] = useState<string>('');
-  const [exportError, setExportError] = useState('');
-  const [toastMessage, setToastMessage] = useState<{ text: string; isError?: boolean } | null>(null);
 
   // Modal xem trước chương
   const [previewChapter, setPreviewChapter] = useState<BatchTranslationItem | null>(null);
 
   const [isImporting, setIsImporting] = useState(false);
-  const [pendingRemoval, setPendingRemoval] = useState<BatchTranslationItem | 'all' | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<BatchTranslationItem | 'all' | { ids: string[] } | null>(null);
   const exportNames = useMemo(() => chapterFileNames(chapters, exportFormat), [chapters, exportFormat]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queueDraft = (work: () => Promise<void>) => {
+    const next = draftQueueRef.current.then(work);
+    draftQueueRef.current = next.catch(error => console.error('Không thể lưu nháp dịch hàng loạt', error));
+    return next;
+  };
+  const draftMeta = (items = chapters): BatchDraftMeta => ({
+    version: BATCH_DRAFT_VERSION, chapterIds: items.map(item => item.id), excludedChapterIds: [...excludedChapterIds], reviewed, selectedNovelId,
+  });
+
+  useEffect(() => {
+    let active = true;
+    void readBatchDraft<BatchTranslationItem>().then(({ meta, chapters: stored }) => {
+      if (!active || !meta || meta.version !== BATCH_DRAFT_VERSION || !stored.length) return;
+      const saved = meta as unknown as BatchDraftMeta;
+      const byId = new Map(stored.map(item => [item.id, item.status === 'processing' ? { ...item, status: 'pending' as const } : item]));
+      const restored = (saved.chapterIds || []).map(id => byId.get(id)).filter((item): item is BatchTranslationItem => !!item);
+      if (!restored.length) return;
+      setChapters(restored); setExcludedChapterIds(new Set(saved.excludedChapterIds || [])); setReviewed(!!saved.reviewed);
+      setSelectedNovelId(saved.selectedNovelId || '');
+    }).catch(error => console.error('Không thể khôi phục nháp dịch hàng loạt', error)).finally(() => { if (active) setDraftReady(true); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!draftReady) return;
+    void queueDraft(() => saveBatchDraftMeta(draftMeta()));
+  }, [draftReady, excludedChapterIds, reviewed, selectedNovelId]);
 
   const removeQueuedChapter = (id: string) => {
     if (isTranslating || isImporting) return;
     setReviewed(false);
     setNameSuggestions([]);
-    setChapters(previous => previous.filter(chapter => chapter.id !== id).map(chapter => ({ ...chapter, status: 'pending', translatedContent: '', translatedTitle: '' })));
+    setChapters(previous => previous.filter(chapter => chapter.id !== id));
+    setSelectedRowIds(previous => { const next = new Set(previous); next.delete(id); return next; });
     setCurrentPage(1);
     setCurrentIndex(0);
     if (previewChapter?.id === id) setPreviewChapter(null);
+    void queueDraft(async () => {
+      await deleteBatchDraftChapters([id]);
+      await saveBatchDraftMeta(draftMeta(chapters.filter(chapter => chapter.id !== id)));
+    });
   };
 
   const confirmRemoval = () => {
@@ -129,22 +175,32 @@ export const BatchTranslateView: React.FC = () => {
       setReviewed(false);
       setNameSuggestions([]);
       setChapters([]);
+      setSelectedRowIds(new Set());
       setCurrentIndex(0);
       setCurrentPage(1);
       setPreviewChapter(null);
+      void queueDraft(clearBatchDraft);
+    } else if (pendingRemoval && 'ids' in pendingRemoval) {
+      const removed = new Set(pendingRemoval.ids);
+      setReviewed(false);
+      setNameSuggestions([]);
+      setChapters(previous => previous.filter(chapter => !removed.has(chapter.id)));
+      setSelectedRowIds(previous => new Set([...previous].filter(id => !removed.has(id))));
+      setExcludedChapterIds(previous => new Set([...previous].filter(id => !removed.has(id))));
+      setCurrentIndex(0);
+      setCurrentPage(1);
+      if (previewChapter && removed.has(previewChapter.id)) setPreviewChapter(null);
+      void queueDraft(async () => {
+        await deleteBatchDraftChapters(pendingRemoval.ids);
+        await saveBatchDraftMeta({ ...draftMeta(chapters.filter(chapter => !removed.has(chapter.id))), excludedChapterIds: [...excludedChapterIds].filter(id => !removed.has(id)) });
+      });
     } else if (pendingRemoval) removeQueuedChapter(pendingRemoval.id);
     setPendingRemoval(null);
   };
 
   const showToast = (text: string, isError = false) => {
-    setToastMessage({ text, isError });
-    setTimeout(() => setToastMessage(null), 3000);
+    background.notify(text, isError);
   };
-
-  // Cập nhật ref khi paused state thay đổi
-  useEffect(() => {
-    isPausedRef.current = isPaused;
-  }, [isPaused]);
 
   // Keep imported numbering independent from the save selection range.
   // Recover title numbers for queues retained by hot reload from the old renumber control.
@@ -182,8 +238,10 @@ export const BatchTranslateView: React.FC = () => {
       setNameSuggestions([]);
       setChapters(items);
       setExcludedChapterIds(new Set());
+      setSelectedRowIds(new Set());
       setCurrentIndex(0);
       setCurrentPage(1);
+      await queueDraft(() => replaceBatchDraft(items, { version: BATCH_DRAFT_VERSION, chapterIds: items.map(item => item.id), excludedChapterIds: [], reviewed: false, selectedNovelId }));
       showToast(`Đã nạp thành công ${items.length} chương!`);
     } catch (err: any) {
       showToast(err.message || 'Lỗi khi đọc danh sách tệp', true);
@@ -195,33 +253,24 @@ export const BatchTranslateView: React.FC = () => {
 
   // Hàm dịch đơn lẻ 1 chương
   const translateSingleItem = (item: BatchTranslationItem, translationNames: NameItem[] = namesList) => {
-    const convTitle = convertText(item.rawTitle, translationNames, vietphraseMap, {
-      prioritizeNames: translationNames !== namesList || settings.prioritizeNames,
-      capitalizeSentences: settings.capitalizeSentences,
-      namesMainMap, customPhienAm: phienAmMap, customLuatNhan: luatNhanMap,
-      customPronouns: pronounsMap,
-      style: translationStyle,
-      customIgnored: ignoredPhrasesList,
-    });
-
-    const convBody = convertText(item.content, translationNames, vietphraseMap, {
-      prioritizeNames: translationNames !== namesList || settings.prioritizeNames,
-      capitalizeSentences: settings.capitalizeSentences,
-      namesMainMap, customPhienAm: phienAmMap, customLuatNhan: luatNhanMap,
-      customPronouns: pronounsMap,
-      style: translationStyle,
-      customIgnored: ignoredPhrasesList,
-    });
+    const quickOptions = {
+      namesMainMap, phienAmMap, luatNhanMap, pronounsMap,
+      ignoredPhrases: ignoredPhrasesList,
+      translationAlgorithm: settings.quickTranslationAlgorithm,
+      wrapType: settings.quickVietphraseWrapType,
+      prioritizedName: settings.prioritizeNames,
+      capitalizeLines: settings.capitalizeSentences,
+    } as const;
+    const [quickTitle, quickBody] = [quickTranslateOneMeaningForBatch(item.rawTitle, translationNames, vietphraseMap, quickOptions), quickTranslateOneMeaningForBatch(item.content, translationNames, vietphraseMap, quickOptions)];
 
     return {
-      title: convTitle.fullText || item.rawTitle,
-      content: convBody.fullText || item.content,
-      tokens: convBody.tokens,
+      title: quickTitle || item.rawTitle,
+      content: quickBody || item.content,
     };
   };
 
-  // Bắt đầu dịch hàng loạt (Non-blocking Queue với chunks)
-  const handleStartBatchTranslation = async () => {
+  // Bắt đầu dịch hàng loạt trong Worker để luồng giao diện vẫn phản hồi.
+  const handleStartBatchTranslation = async (control: BackgroundTaskControl) => {
     if (chapters.length === 0) {
       showToast('Chưa có chương nào để dịch!', true);
       return;
@@ -231,79 +280,114 @@ export const BatchTranslateView: React.FC = () => {
     setReviewed(false);
     setReviewOpen(false);
     setNameSuggestions([]);
-    setChapters(previous => previous.map(chapter => ({ ...chapter, status: 'pending', translatedTitle: '', translatedContent: '' })));
+    const resetChapters = chapters.map(chapter => ({ ...chapter, status: 'pending' as const, translatedTitle: '', translatedContent: '' }));
+    setChapters(resetChapters);
     setExcludedChapterIds(new Set());
-    const detector = new BatchNameDetector(namesList.map(row => row.chinese));
+    void queueDraft(() => replaceBatchDraft(resetChapters, { ...draftMeta(resetChapters), excludedChapterIds: [], reviewed: false }));
+    const detector = new BatchNameDetector([...namesList.map(row => row.chinese), ...Object.keys(namesMainMap)]);
     setIsTranslating(true);
     setIsPaused(false);
     cancelRequestedRef.current = false;
-    isPausedRef.current = false;
+    background.progress({ detail: 'Đang khởi động bộ dịch…', percent: 0 });
+    const runId = ++batchRunIdRef.current;
+    const chapterById = new Map(resetChapters.map(chapter => [chapter.id, chapter]));
+    const quickOptions = {
+      namesMainMap, phienAmMap, luatNhanMap, pronounsMap,
+      ignoredPhrases: ignoredPhrasesList,
+      translationAlgorithm: settings.quickTranslationAlgorithm,
+      wrapType: settings.quickVietphraseWrapType,
+      prioritizedName: settings.prioritizeNames,
+      capitalizeLines: settings.capitalizeSentences,
+    } as const;
 
-    // Tìm vị trí chương chưa hoàn thành đầu tiên
-    const startIdx = 0;
-
-    for (let i = startIdx; i < chapters.length; i++) {
-      if (cancelRequestedRef.current) break;
-
-      // Xử lý tạm dừng
-      while (isPausedRef.current && !cancelRequestedRef.current) {
-        await new Promise(r => setTimeout(r, 200));
-      }
-      if (cancelRequestedRef.current) break;
-
-      setCurrentIndex(i);
-
-      // Cập nhật trạng thái đang dịch
-      setChapters(prev => {
-        const copy = [...prev];
-        copy[i] = { ...copy[i], status: 'processing' };
-        return copy;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const worker = new Worker(new URL('../../utils/batchTranslation.worker.ts', import.meta.url), { type: 'module' });
+        batchWorkerRef.current = worker;
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          control.signal.removeEventListener('abort', handleAbort);
+          abortBatchRunRef.current = null;
+          if (error) reject(error);
+          else resolve();
+        };
+        const handleAbort = () => finish(new DOMException('Tác vụ dịch đã bị dừng vì không còn phản hồi.', 'AbortError'));
+        control.signal.addEventListener('abort', handleAbort, { once: true });
+        abortBatchRunRef.current = () => finish(new DOMException('Đã dừng tác vụ dịch nền.', 'AbortError'));
+        let completedCount = 0;
+        worker.onerror = event => finish(new Error(event.message || 'Không thể khởi động dịch nền.'));
+        worker.onmessageerror = () => finish(new Error('Bộ dịch trả về dữ liệu không hợp lệ.'));
+        worker.onmessage = ({ data }) => {
+          if (data.runId !== runId) return;
+          control.heartbeat();
+          if (data.type === 'chunk') {
+            const completed: BatchTranslationItem[] = data.rows.flatMap((row: { id: string; title: string; content: string }): BatchTranslationItem[] => {
+              const chapter = chapterById.get(row.id);
+              if (!chapter) return [];
+              detector.addChapter(chapter.content, []);
+              return [{ ...chapter, translatedTitle: row.title, translatedContent: row.content, status: 'done' as const }];
+            });
+            completedCount += completed.length;
+            const results = new Map<string, BatchTranslationItem>(completed.map(chapter => [chapter.id, chapter]));
+            setChapters(previous => previous.map(chapter => results.get(chapter.id) || chapter));
+            setCurrentIndex(completedCount);
+            void queueDraft(() => saveBatchDraftChapters(completed));
+            background.progress({ detail: `Đã xử lý ${completedCount}/${resetChapters.length} chương`, percent: Math.round((completedCount / resetChapters.length) * 100) });
+          } else if (data.type === 'complete') finish();
+          else if (data.type === 'error') finish(new Error(data.message || 'Lỗi dịch nền.'));
+        };
+        worker.postMessage({ type: 'start', runId, chapters: resetChapters, names: namesList, vietphrase: vietphraseMap, options: quickOptions });
+        control.heartbeat();
       });
-
-      // Nhường luồng cho UI render mượt mà
-      await new Promise(r => setTimeout(r, 0));
-
-      try {
-        const currentItem = chapters[i];
-        const res = translateSingleItem(currentItem);
-        detector.addChapter(currentItem.content, res.tokens);
-
-        setChapters(prev => {
-          const copy = [...prev];
-          copy[i] = {
-            ...copy[i],
-            translatedTitle: res.title,
-            translatedContent: res.content,
-            status: 'done',
-          };
-          return copy;
-        });
-      } catch (err: any) {
-        setChapters(prev => {
-          const copy = [...prev];
-          copy[i] = {
-            ...copy[i],
-            status: 'error',
-            errorMessage: err.message || 'Lỗi dịch',
-          };
-          return copy;
-        });
+      setNameSuggestions(detector.suggestions({ includeUncertain: true }));
+      if (!cancelRequestedRef.current) {
+        setReviewOpen(true);
+        showToast('Đã dịch nháp. Hãy duyệt tên và xác nhận bản dịch.');
       }
-    }
-
-    setIsTranslating(false);
-    setNameSuggestions(detector.suggestions({ includeUncertain: true }));
-    if (!cancelRequestedRef.current) {
-      setReviewOpen(true);
-      showToast('Đã dịch nháp. Hãy duyệt tên và xác nhận bản dịch.');
+    } catch (error) {
+      if (!cancelRequestedRef.current) throw error;
+    } finally {
+      abortBatchRunRef.current = null;
+      batchWorkerRef.current?.terminate();
+      batchWorkerRef.current = null;
+      setIsTranslating(false);
+      setIsPaused(false);
     }
   };
 
-  useEffect(() => () => { cancelRequestedRef.current = true; }, []);
+  useEffect(() => {
+    // React Fast Refresh keeps state but replaces the Worker. Clear any stale
+    // "translating" state so development updates cannot leave the UI at 0%.
+    setIsTranslating(false);
+    setIsPaused(false);
+    const stopDetachedWorker = () => {
+      cancelRequestedRef.current = true;
+      abortBatchRunRef.current?.();
+      abortBatchRunRef.current = null;
+      batchWorkerRef.current?.terminate();
+      batchWorkerRef.current = null;
+    };
+    import.meta.hot?.dispose(stopDetachedWorker);
+    return stopDetachedWorker;
+  }, []);
   useEffect(() => {
     setReviewed(false);
     setNameSuggestions([]);
-    setChapters(previous => previous.map(chapter => ({ ...chapter, translatedContent: '', translatedTitle: '', status: 'pending' })));
+    setChapters(previous => {
+      const reset = previous.map(chapter => ({ ...chapter, translatedContent: '', translatedTitle: '', status: 'pending' as const }));
+      if (draftReady) {
+        void queueDraft(() => replaceBatchDraft(reset, {
+          version: BATCH_DRAFT_VERSION,
+          chapterIds: reset.map(chapter => chapter.id),
+          excludedChapterIds: [...excludedChapterIds],
+          reviewed: false,
+          selectedNovelId,
+        }));
+      }
+      return reset;
+    });
   }, [translationStyle]);
 
   const confirmNameReview = async (selected: { chinese: string; vietnamese: string }[], remember: boolean) => {
@@ -317,6 +401,8 @@ export const BatchTranslateView: React.FC = () => {
           if (updated[i].status !== 'done') continue;
           const result = translateSingleItem(updated[i], approved);
           updated[i] = { ...updated[i], translatedTitle: result.title, translatedContent: result.content };
+          void queueDraft(() => saveBatchDraftChapter(updated[i]));
+          background.progress({ detail: `Đang áp dụng tên cho chương ${i + 1}/${updated.length}`, percent: Math.round(((i + 1) / updated.length) * 95) });
           await new Promise(resolve => setTimeout(resolve, 0));
         }
         if (remember) await importEntriesBatch('names', selected);
@@ -332,19 +418,23 @@ export const BatchTranslateView: React.FC = () => {
 
   // Tạm dừng / Tiếp tục
   const handleTogglePause = () => {
-    setIsPaused(prev => !prev);
+    setIsPaused(previous => {
+      const next = !previous;
+      batchWorkerRef.current?.postMessage({ type: 'pause', runId: batchRunIdRef.current, paused: next });
+      return next;
+    });
   };
 
   // Hủy tiến trình dịch
   const handleStopTranslation = () => {
     cancelRequestedRef.current = true;
-    isPausedRef.current = false;
+    batchWorkerRef.current?.postMessage({ type: 'cancel', runId: batchRunIdRef.current });
     setIsPaused(false);
-    showToast('Đã dừng tiến trình dịch');
+    background.reportResult('Đã dừng tiến trình dịch');
   };
 
-  // Tải từng chương đã chọn bằng cùng cơ chế tải EPUB của thư viện.
-  const handleDownloadSelectedFiles = async (format: 'txt' | 'docx') => {
+  // Pick one folder once, then write every selected chapter into it.
+  const handleDownloadSelectedFiles = async (format: ChapterExportFormat) => {
     if (!reviewed || reviewBusy || isTranslating) { showToast('Hãy duyệt tên và xác nhận bản dịch trước.', true); return; }
     const readyChapters = selectedChapters;
     if (readyChapters.length === 0) {
@@ -354,23 +444,32 @@ export const BatchTranslateView: React.FC = () => {
 
 
     setIsExporting(true);
-    setExportError('');
-    setExportMessage('Đang tạo file tải xuống...');
-
+    const pickerStartedAt = performance.now();
     try {
-      const res = await downloadChapterFiles(
+      const res = await saveChaptersToUserFolder(
         readyChapters,
         format,
-        (saved, total, currentName) => {
-          setExportMessage(`Đã gửi ${currentName} tới trình tải xuống (${saved}/${total})...`);
-        },
+        undefined,
+        undefined,
       );
-      showToast(`Đã gửi ${res.count} file ${format.toUpperCase()} tới trình tải xuống.`);
+      showToast(`Đã lưu ${res.count} file ${format.toUpperCase()} vào thư mục “${res.folderName}”.`);
     } catch (err: any) {
-      const message = err.message || 'Không tạo được file tải xuống'; setExportError(message); showToast(message, true);
+      if (err?.name === 'AbortError') {
+        const blockedByEmbeddedBrowser = /\bCode\/\d/i.test(navigator.userAgent) && performance.now() - pickerStartedAt < 1500;
+        if (blockedByEmbeddedBrowser) {
+          try {
+            await downloadChaptersAsZip(readyChapters, format, `Hermes_${format.toUpperCase()}_${readyChapters.length}_chuong`);
+            showToast(`Trình duyệt tích hợp không cho chọn thư mục. Đã tải một gói ZIP chứa ${readyChapters.length} file ${format.toUpperCase()} hoàn chỉnh.`);
+          } catch (fallbackError) {
+            showToast(fallbackError instanceof Error ? fallbackError.message : 'Không tạo được gói file tải xuống.', true);
+          }
+          return;
+        }
+        showToast('Đã hủy chọn thư mục.'); return;
+      }
+      const message = err.message || 'Không tạo được file tải xuống'; showToast(message, true);
     } finally {
       setIsExporting(false);
-      setExportMessage('');
     }
   };
 
@@ -383,16 +482,21 @@ export const BatchTranslateView: React.FC = () => {
     }
 
     try {
-      const existingNovel = novelsList.find(row => row.title.trim().toLowerCase() === novelTitle.trim().toLowerCase());
-      if (!newBook && !selectedNovelId && !existingNovel) { setNewBookOpen(true); return; }
-      const book = newBook ? { ...newBook, translationStyle } : selectedNovelId || existingNovel!.id;
+      if (!newBook && !selectedNovelId) {
+        showToast('Hãy chọn truyện trong Thư viện hoặc tạo truyện mới.', true);
+        return;
+      }
+      const book = newBook ? { ...newBook, translationStyle } : selectedNovelId;
       const incoming = readyChapters.map(chap => {
         const prefix = `Chương ${chap.chapterNum}`;
         const part = chap.rawTitle.match(/[（(]\s*(\d+)\s*[/／]\s*(\d+)\s*[)）]/);
         const base = chap.translatedTitle || `${prefix}: Đang cập nhật`;
         const title = part && !/[（(]\s*\d+\s*[/／]\s*\d+\s*[)）]/.test(base) ? `${base} (${part[1]}/${part[2]})` : base;
+        // Source chapter numbers are not reliably unique (some crawlers restart
+        // numbering). Keep the queue item's stable ID as the import identity so
+        // every translated item can be saved and later re-saved independently.
         return { title, chapterPrefix: prefix, chapterName: chap.translatedTitle.replace(/^(?:Chương|Hồi|Tiết)\s*\d+[\s:：\-–—\.]*/i, ''),
-          originalText: chap.content, vietphraseText: chap.translatedContent };
+          originalText: chap.content, vietphraseText: chap.translatedContent, sourceUrl: `batch-draft:${chap.id}` };
       });
       const novel = typeof book === 'string' ? novelsList.find(row => row.id === book) : novelsList.find(row => row.title.toLowerCase() === book.title.toLowerCase());
       const matcher = createLibraryChapterMatcher(savedChapters);
@@ -435,6 +539,16 @@ export const BatchTranslateView: React.FC = () => {
         c.translatedTitle.toLowerCase().includes(q)
     );
   }, [chapters, searchQuery]);
+  const selectedFilteredChapters = filteredChapters.filter(chapter => selectedRowIds.has(chapter.id));
+  const allFilteredSelected = filteredChapters.length > 0 && selectedFilteredChapters.length === filteredChapters.length;
+  const toggleAllFiltered = () => setSelectedRowIds(previous => {
+    const next = new Set(previous);
+    for (const chapter of filteredChapters) {
+      if (allFilteredSelected) next.delete(chapter.id);
+      else next.add(chapter.id);
+    }
+    return next;
+  });
 
   const totalPages = Math.max(1, Math.ceil(filteredChapters.length / PAGE_SIZE));
   useEffect(() => { setCurrentPage(previous => Math.min(previous, totalPages)); }, [totalPages]);
@@ -446,14 +560,15 @@ export const BatchTranslateView: React.FC = () => {
   return (
     <div className="@container flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden bg-canvas text-main">
 
-      {reviewOpen && <BatchNameReviewDialog suggestions={nameSuggestions} busy={reviewBusy} chapterCount={chapters.filter(chapter => chapter.status === 'done').length} onConfirm={confirmNameReview} onCancel={() => { if (!reviewBusy) setReviewOpen(false); }} />}
+      {reviewOpen && activeTab === 'batch' && <BatchNameReviewDialog suggestions={nameSuggestions} busy={reviewBusy} chapterCount={chapters.filter(chapter => chapter.status === 'done').length} onConfirm={(selected, remember) => background.run('Hoàn tất bản dịch', () => confirmNameReview(selected, remember))} onHide={() => setReviewOpen(false)} onCancel={() => { if (!reviewBusy) setReviewOpen(false); }} />}
       {pendingSave && <LibrarySaveConflictDialog count={pendingSave.matchIds.length} busy={saveBusy} onChoose={policy => void saveBatchLibrary(pendingSave, policy)} onCancel={() => setPendingSave(null)} />}
-      {newBookOpen && !pendingSave && <NewLibraryBookDialog initialTitle={novelTitle} chapterCount={selectedChapters.length} busy={saveBusy} onCancel={() => { if (!saveBusy) setNewBookOpen(false); }} onConfirm={book => void handleSaveAllToLibrary(book)} />}
-      {!reviewed && chapters.some(chapter => chapter.status === 'done') && !isTranslating && <div role="status" className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-line bg-raised px-4 py-2 text-sm"><span>Bản dịch nháp — cần xác nhận trước khi xuất hoặc lưu.</span><button className="studio-action" onClick={() => setReviewOpen(true)}>Duyệt tên và xác nhận</button></div>}
+      {newBookOpen && !pendingSave && <NewLibraryBookDialog initialTitle="" chapterCount={selectedChapters.length} busy={saveBusy} onCancel={() => { if (!saveBusy) setNewBookOpen(false); }} onConfirm={book => void handleSaveAllToLibrary(book)} />}
       {pendingRemoval && <ConfirmDeleteDialog
         description={pendingRemoval === 'all'
           ? `Xóa toàn bộ ${chapters.length} chương khỏi danh sách dịch? Tệp gốc và truyện trong thư viện vẫn được giữ.`
-          : `Xóa “${pendingRemoval.rawTitle}” (${exportNames.get(pendingRemoval.id)}) khỏi danh sách dịch? Tệp gốc vẫn được giữ.`}
+          : 'ids' in pendingRemoval
+            ? `Xóa ${pendingRemoval.ids.length} chương đã chọn khỏi danh sách dịch? Tệp gốc và truyện trong thư viện vẫn được giữ.`
+            : `Xóa “${pendingRemoval.rawTitle}” (${exportNames.get(pendingRemoval.id)}) khỏi danh sách dịch? Tệp gốc vẫn được giữ.`}
         onCancel={() => setPendingRemoval(null)}
         onConfirm={confirmRemoval}
       />}
@@ -491,7 +606,7 @@ export const BatchTranslateView: React.FC = () => {
 
             {!isTranslating ? (
               <button
-                onClick={handleStartBatchTranslation}
+                onClick={() => background.run('Dịch nhiều chương', handleStartBatchTranslation, { staleAfterMs: 120_000 })}
                 disabled={chapters.length === 0 || reviewBusy || saveBusy}
                 className="studio-action studio-action-primary"
                 title="Dịch toàn bộ chương đã thêm"
@@ -523,32 +638,8 @@ export const BatchTranslateView: React.FC = () => {
         </div>
 
         {/* Thông báo tiến độ / Toast */}
-        {toastMessage && (
-          <div className={`px-4 py-2 text-xs font-medium flex items-center justify-between border-b ${
-            toastMessage.isError 
-              ? 'bg-rose-950/80 text-rose-200 border-rose-800' 
-              : 'bg-emerald-950/80 text-emerald-200 border-emerald-800'
-          }`}>
-            <span>{toastMessage.text}</span>
-            <button onClick={() => setToastMessage(null)} className="text-muted hover:text-main">
-              <X size={13} />
-            </button>
-          </div>
-        )}
-
-        {exportError && <div role="alert" className="flex flex-wrap items-center gap-3 border-b border-rose-800 bg-rose-950 px-4 py-3 text-xs text-rose-100"><span className="min-w-0 flex-1">{exportError}</span><button className="underline" onClick={() => void handleDownloadSelectedFiles(exportFormat)}>Thử lưu lại</button><button aria-label="Đóng lỗi lưu file" onClick={() => setExportError('')}><X size={14} /></button></div>}
-        {isExporting && exportMessage && (
-          <div className="px-6 py-2 bg-accent-soft/90 text-accent border-b border-accent text-xs font-medium flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-accent-soft animate-ping" />
-            <span>{exportMessage}</span>
-          </div>
-        )}
-
         {/* Cấu hình & Nạp đầu vào */}
         <div data-batch-toolbar="settings" className="shrink-0 min-w-0 px-3 @min-[640px]:px-6 py-3 border-b border-line/60 bg-surface/30 flex flex-wrap gap-x-4 gap-y-2 items-center text-xs">
-          <div className="batch-save-controls flex shrink-0 items-center">
-            <BatchSaveMenu disabled={!reviewed || isTranslating || reviewBusy || saveBusy || isExporting || !selectedChapters.length} onLibrary={() => void handleSaveAllToLibrary()} onComputer={format => { setExportFormat(format); void handleDownloadSelectedFiles(format); }} />
-          </div>
           {/* Tên truyện & Thư viện */}
           <BatchSaveRange
             key={`${chapters.length}:${chapters[0]?.id || ''}:${reviewed}`}
@@ -556,34 +647,16 @@ export const BatchTranslateView: React.FC = () => {
             disabled={!completedChapters.length || isTranslating || reviewBusy || saveBusy || isExporting}
             onChange={(first, last) => setExcludedChapterIds(new Set(chapterIdsOutsidePositionRange(chapters, first, last)))}
           />
-          <div className="batch-book-fields flex min-w-0 flex-wrap items-center gap-2">
-            {novelsList.length > 0 && (
-              <select
-                aria-label="Chọn truyện từ thư viện"
-                value={selectedNovelId}
-                onChange={(e) => {
-                  setSelectedNovelId(e.target.value);
-                  const found = novelsList.find(n => n.id === e.target.value);
-                  if (found) setNovelTitle(found.title);
-                }}
-                className="w-40 max-w-full min-w-0 h-8 bg-surface border border-line rounded-lg px-2 py-1.5 text-xs text-main focus:outline-none focus:border-accent"
-              >
-                <option value="">Chọn từ thư viện</option>
-                {novelsList.map(n => (
-                  <option key={n.id} value={n.id}>{n.title}</option>
-                ))}
+          <div className="batch-save-controls ml-auto flex shrink-0 items-center">
+            <BatchSaveMenu disabled={!reviewed || isTranslating || reviewBusy || saveBusy || isExporting || !selectedChapters.length} libraryFields={<>
+              <select aria-label="Chọn từ Thư Viện" value={selectedNovelId} onChange={event => setSelectedNovelId(event.target.value)} disabled={!novelsList.length} className="block h-9 w-full rounded-lg border border-line bg-canvas px-3 text-center text-xs font-medium text-main transition-colors hover:bg-hover focus:border-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-60">
+                <option value="">{novelsList.length ? 'Chọn từ Thư Viện' : 'Chưa có truyện trong Thư Viện'}</option>
+                {novelsList.map(novel => <option key={novel.id} value={novel.id}>{novel.title}</option>)}
               </select>
-            )}
-            <label htmlFor="batch-novel-title" className="text-muted whitespace-nowrap">Tên truyện:</label>
-            <input
-              id="batch-novel-title"
-              type="text"
-              value={novelTitle}
-              onChange={(e) => setNovelTitle(e.target.value)}
-              placeholder="Nhập tên truyện..."
-              className="w-52 max-w-full min-w-0 h-8 bg-surface border border-line rounded-lg px-2.5 py-1.5 text-xs text-main focus:outline-none focus:border-accent"
-            />
-
+              <button type="button" onClick={() => { setSelectedNovelId(''); setNewBookOpen(true); }} className="flex h-9 w-full items-center justify-center rounded-lg border border-line bg-canvas px-3 text-center text-xs font-medium text-main transition-colors hover:bg-hover focus:outline-none focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent">
+                Thêm Truyện mới
+              </button>
+            </>} onLibrary={() => void handleSaveAllToLibrary()} onComputer={format => { setExportFormat(format); void handleDownloadSelectedFiles(format); }} />
           </div>
 
           {/* STT Bắt đầu */}
@@ -620,16 +693,27 @@ export const BatchTranslateView: React.FC = () => {
                   setCurrentPage(1);
                 }}
                 placeholder="Tìm chương..."
-                className="bg-surface border border-line rounded-lg pl-8 pr-3 py-1 text-xs text-main focus:outline-none focus:border-accent w-44"
+                className="bg-surface border border-line rounded-lg pl-8 pr-8 py-1 text-xs text-main focus:outline-none focus:border-accent w-44"
               />
+              {searchQuery.length > 0 && (
+                <button
+                  type="button"
+                  aria-label="Xóa nội dung tìm chương"
+                  title="Xóa tìm kiếm"
+                  onClick={() => { setSearchQuery(''); setCurrentPage(1); }}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted hover:bg-raised hover:text-main focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                >
+                  <X size={13} />
+                </button>
+              )}
             </div>
 
             {chapters.length > 0 && (
               <button
-                onClick={() => setPendingRemoval('all')}
-                disabled={isTranslating || isImporting}
+                onClick={() => setPendingRemoval({ ids: selectedFilteredChapters.map(chapter => chapter.id) })}
+                disabled={isTranslating || isImporting || !selectedFilteredChapters.length}
                 className="p-1 rounded-md text-muted hover:text-rose-400 hover:bg-raised transition-colors"
-                title="Xóa danh sách chương hiện tại"
+                title={searchQuery.trim() ? `Xóa ${selectedFilteredChapters.length} kết quả đã chọn` : `Xóa ${selectedFilteredChapters.length} chương đã chọn`}
               >
                 <Trash2 size={14} />
               </button>
@@ -639,9 +723,6 @@ export const BatchTranslateView: React.FC = () => {
 
         {/* Bảng danh sách chương (Phân trang 50 chương/trang) */}
         <div className="batch-chapter-list flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 @min-[640px]:px-6 py-2">
-          {completedChapters.length > 0 && <div className="mb-2 shrink-0 text-xs">
-            <span role="status" className="text-muted">Đã chọn {selectedChapters.length}/{completedChapters.length} chương để lưu</span>
-          </div>}
           {chapters.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-8 text-muted">
               <div className="w-14 h-14 rounded-2xl bg-surface border border-line flex items-center justify-center text-muted mb-3">
@@ -657,7 +738,7 @@ export const BatchTranslateView: React.FC = () => {
               <table className="batch-chapter-table w-full min-w-[640px] text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-surface/80 border-b border-line text-muted font-semibold">
-                    <th className="w-9 px-3 py-2.5"><input type="checkbox" aria-label="Chọn tất cả chương đã dịch" checked={allChaptersSelected} ref={element => { if (element) element.indeterminate = selectedChapters.length > 0 && !allChaptersSelected; }} disabled={!completedChapters.length || isTranslating || reviewBusy || saveBusy || isExporting} onChange={toggleAllChapters} /></th>
+                    <th className="w-9 px-3 py-2.5"><input type="checkbox" aria-label="Chọn tất cả kết quả đang lọc" checked={allFilteredSelected} ref={element => { if (element) element.indeterminate = selectedFilteredChapters.length > 0 && !allFilteredSelected; }} disabled={!filteredChapters.length || isTranslating || reviewBusy || saveBusy || isExporting} onChange={toggleAllFiltered} /></th>
                     <th className="py-2.5 px-3 w-24">Tên file</th>
                     <th className="py-2.5 px-3">Tiêu đề gốc</th>
                     <th className="py-2.5 px-3">Tiêu đề dịch</th>
@@ -666,7 +747,7 @@ export const BatchTranslateView: React.FC = () => {
                     <th className="py-2.5 px-3 w-20 text-center">Thao tác</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-neutral-800/60 font-sans">
+                <tbody className="divide-y divide-neutral-800/60 font-reading">
                   {displayedChapters.map((chap) => {
                     const fileName = exportNames.get(chap.id);
                     return (
@@ -674,7 +755,7 @@ export const BatchTranslateView: React.FC = () => {
                         key={chap.id}
                         className="hover:bg-raised/30 transition-colors group"
                       >
-                        <td className="px-3 py-2.5"><input type="checkbox" aria-label={`Chọn lưu ${chap.rawTitle}`} checked={chap.status === 'done' && !!chap.translatedContent && !excludedChapterIds.has(chap.id)} disabled={chap.status !== 'done' || !chap.translatedContent || isTranslating || reviewBusy || saveBusy || isExporting} onChange={event => { const checked = event.target.checked; setExcludedChapterIds(previous => { const next = new Set(previous); if (checked) next.delete(chap.id); else next.add(chap.id); return next; }); }} /></td>
+                        <td className="px-3 py-2.5"><input type="checkbox" aria-label={`Chọn ${chap.rawTitle} để xóa`} checked={selectedRowIds.has(chap.id)} disabled={isTranslating || reviewBusy || saveBusy || isExporting} onChange={event => { const checked = event.target.checked; setSelectedRowIds(previous => { const next = new Set(previous); if (checked) next.add(chap.id); else next.delete(chap.id); return next; }); }} /></td>
                         {/* Tên file: CHỈ GỒM STT CHƯƠNG */}
                         <td className="py-2.5 px-3 font-mono font-bold text-accent">
                           {fileName}
@@ -682,7 +763,7 @@ export const BatchTranslateView: React.FC = () => {
                         </td>
 
                         {/* Tiêu đề gốc */}
-                        <td className="py-2.5 px-3 text-main font-serif max-w-xs truncate" title={chap.rawTitle}>
+                        <td className="py-2.5 px-3 text-main font-reading max-w-xs truncate" title={chap.rawTitle}>
                           {chap.rawTitle}
                         </td>
 

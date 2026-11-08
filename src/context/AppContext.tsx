@@ -19,8 +19,8 @@ import { loadMeaningStyles, meaningStyleSnapshot, meaningStyleFallback, applyMea
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { authRequest } from '../utils/googleAuth';
+import { simplifyChinese } from '../utils/simplifyChinese';
 import { NameItem, INITIAL_NAMES } from '../data/defaultNames';
-import { SAMPLE_CHAPTERS } from '../data/sampleNovels';
 import { 
   saveNameItem, 
   deleteNameItem, 
@@ -41,7 +41,8 @@ import {
   saveIgnoredPhrasesBatch,
   clearIgnoredPhrasesStore,
   readStore, readAppValue, writeAppValue, replaceStores, deleteIgnoredPhrases, deleteDictionaryKeys,
-  STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRASE, STORE_LUAT_NHAN, STORE_PRONOUNS, STORE_IGNORED, STORE_PHIEN_AM, DICTIONARY_STORES
+  STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRASE, STORE_LUAT_NHAN, STORE_PRONOUNS, STORE_IGNORED, STORE_PHIEN_AM, DICTIONARY_STORES,
+  subscribeDictionaryChanges
 } from '../utils/indexedDbStorage';
 import { 
   DEFAULT_LUAT_NHAN, 
@@ -82,6 +83,9 @@ export interface NovelBook {
   createdAt: number;
   updatedAt: number;
   isFavorite?: boolean;
+  publicationStatus?: 'ongoing' | 'completed';
+  rating?: 1 | 2 | 3 | 4 | 5;
+  review?: string;
 }
 
 export const PRESET_COVERS = [
@@ -126,9 +130,11 @@ export interface AppSettings {
   theme: AppTheme;
   fontSize: number;
   lineHeight: number;
-  fontFamily: 'sans' | 'serif';
+  fontFamily: 'reading';
   displayMode: 'responsive' | 'mobile_frame';
   prioritizeNames: boolean;
+  quickTranslationAlgorithm: 0 | 1 | 2;
+  quickVietphraseWrapType: 0 | 1 | 2 | 3;
   capitalizeSentences: boolean;
   ttsRate: number;
   customTextColor?: string;
@@ -169,6 +175,8 @@ interface AppContextType {
   // Names Phụ / Cá Nhân
   namesList: NameItem[];
   addName: (chinese: string, vietnamese: string, category?: NameItem['category'], note?: string) => boolean;
+  addNameMain: (chinese: string, vietnamese: string) => boolean;
+  deleteNameMain: (chinese: string) => void;
   updateName: (id: string, updates: Partial<NameItem>) => void;
   deleteName: (id: string) => void;
   exportNamesTxt: () => string;
@@ -230,6 +238,7 @@ interface AppContextType {
   saveChapter: (chapter: Omit<SavedChapter, 'id' | 'savedAt'>, options?: ChapterSaveOptions) => Promise<string>;
   updateSavedChapter: (id: string, updates: Pick<SavedChapter, 'title' | 'originalText' | 'vietphraseText'>) => Promise<void>;
   deleteSavedChapter: (id: string) => Promise<void>;
+  deleteSavedChapters: (ids: string[]) => Promise<number>;
   
   // Settings
   settings: AppSettings;
@@ -241,10 +250,10 @@ interface AppContextType {
     initialChinese: string;
     initialVietnamese: string;
     initialCategory: NameItem['category'];
-    target?: 'name' | 'vietphrase';
+    target?: 'name' | 'name_main' | 'vietphrase';
     style?: TranslationStyle;
   };
-  openInspectModal: (chinese: string, vietnamese?: string, category?: NameItem['category'], target?: 'name' | 'vietphrase', style?: TranslationStyle) => void;
+  openInspectModal: (chinese: string, vietnamese?: string, category?: NameItem['category'], target?: 'name' | 'name_main' | 'vietphrase', style?: TranslationStyle) => void;
   closeInspectModal: () => void;
 
   // Active translation buffer
@@ -258,52 +267,74 @@ interface AppContextType {
   setActiveNovelId: (id: string) => void;
 }
 
-const DEFAULT_NOVELS: NovelBook[] = [
-  {
-    id: 'novel-1',
-    title: 'Đấu Phá Thương Khung',
-    originalTitle: '斗破苍穹',
-    author: 'Thiên Tàm Thổ Đậu (天蚕土豆)',
-    coverUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=400&auto=format&fit=crop&q=80',
-    description: 'Nơi này là thuộc về đấu khí thế giới, không có hoa tiếu diễm lệ ma pháp, có, chỉ là sinh sôi đến đỉnh phong đấu khí! Thiếu niên Tiêu Viêm từng là thiên tài nay trở thành phế vật, tình cờ đánh thức Dược Lão trong chiếc giới chỉ tàn lưu...',
-    genre: 'Huyền huyễn / Dị giới',
-    createdAt: Date.now() - 1000000,
-    updatedAt: Date.now() - 100000,
-  },
-  {
-    id: 'novel-2',
-    title: 'Phàm Nhân Tu Tiên',
-    originalTitle: '凡人修仙传',
-    author: 'Vong Ngữ (忘语)',
-    coverUrl: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=400&auto=format&fit=crop&q=80',
-    description: 'Một cái bình thường phổ thông sơn thôn thiếu niên Hàn Lập, ngẫu nhiên tiến vào giang hồ môn phái, tuy rằng tư chất thường thường, nhưng dựa vào tâm tính kiên định cùng một cái thần bí tiểu lục bình, bước lên con đường tu tiên đầy trắc trở.',
-    genre: 'Tiên hiệp / Cổ điển',
-    createdAt: Date.now() - 900000,
-    updatedAt: Date.now() - 200000,
-  },
-  {
-    id: 'novel-3',
-    title: 'Già Thiên',
-    originalTitle: '遮天',
-    author: 'Thần Đông (辰东)',
-    coverUrl: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=400&auto=format&fit=crop&q=80',
-    description: 'Băng lãnh cùng hắc ám cùng tồn tại trong vũ trụ sâu thẳm, chín bộ kéo hòm rồng khổng lồ nằm ngang vạn cổ. Diệp Phàm cùng các bạn học tham gia họp lớp tại Thái Sơn, bất ngờ bị cuốn vào hành trình tu tiên vĩ đại xuyên qua các tinh vực...',
-    genre: 'Huyền huyễn / Tiên hiệp',
-    createdAt: Date.now() - 800000,
-    updatedAt: Date.now() - 300000,
-  },
-];
+const DEFAULT_NOVEL_ID = 'default-tian-hei-qing-dian-deng';
+const LEGACY_SAMPLE_NOVEL_IDS = new Set(['novel-1', 'novel-2', 'novel-3']);
+const DEFAULT_NOVELS: NovelBook[] = [{
+  id: DEFAULT_NOVEL_ID,
+  title: 'Thiên Hắc Thỉnh Điểm Đăng',
+  originalTitle: '天黑请点灯',
+  author: '罗樵森 (La Tiều Sâm)',
+  genre: 'Huyền huyễn / Linh dị / Kinh dị',
+  publicationStatus: 'ongoing',
+  createdAt: 0,
+  updatedAt: 0,
+}];
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   fontSize: 16,
   lineHeight: 1.7,
-  fontFamily: 'sans',
+  fontFamily: 'reading',
   displayMode: 'responsive',
   prioritizeNames: true,
+  quickTranslationAlgorithm: 1,
+  quickVietphraseWrapType: 0,
   capitalizeSentences: true,
   ttsRate: 1.0,
   customTextColor: '',
+};
+
+const normalizeSettings = (value?: Partial<AppSettings> | Record<string, unknown>): AppSettings => {
+  const legacy = { ...(value || {}) } as Record<string, unknown>;
+  delete legacy.desktopTranslationEngine;
+  if (legacy.fontFamily === 'sans' || legacy.fontFamily === 'serif') legacy.fontFamily = 'reading';
+  if (legacy.fontFamily !== undefined && legacy.fontFamily !== 'reading') delete legacy.fontFamily;
+  return { ...DEFAULT_SETTINGS, ...legacy } as AppSettings;
+};
+
+const rowsToDictionaryMap = (rows: Array<{ chinese: string; vietnamese: string }>) =>
+  Object.fromEntries(rows.map(row => [row.chinese, row.vietnamese]));
+
+const rowsToVietphraseMap = (rows: Array<{ chinese: string; vietnamese: string }>) => {
+  const result: Record<string, string> = Object.create(null);
+  // Add normalized aliases first; exact simplified entries win in pass two.
+  for (const row of rows) result[simplifyChinese(row.chinese)] = row.vietnamese;
+  for (const row of rows) result[row.chinese] = row.vietnamese;
+  return result;
+};
+
+/**
+ * A saved chapter must belong to one concrete book ID. Older title-only rows
+ * cannot safely be matched: a later book with the same title would inherit
+ * them. Remove those rows, together with orphaned and duplicate IDs, whenever
+ * the library is read or written.
+ */
+const normalizeLibraryData = (library: LibraryData): LibraryData => {
+  // Versions before 1.2 seeded three showcase books into an empty library.
+  // They are not user data and must never reappear after the library is cleared.
+  const hadLegacySamples = library.novelsList.some(book => LEGACY_SAMPLE_NOVEL_IDS.has(book.id));
+  let novelsList = library.novelsList.filter(book => !LEGACY_SAMPLE_NOVEL_IDS.has(book.id));
+  if (hadLegacySamples && novelsList.length === 0) novelsList = DEFAULT_NOVELS;
+  const novelIds = new Set(novelsList.map(book => book.id));
+  const chapterIds = new Set<string>();
+  const savedChapters = library.savedChapters.filter(chapter => {
+    if (!chapter.novelId || !novelIds.has(chapter.novelId) || chapterIds.has(chapter.id)) return false;
+    chapterIds.add(chapter.id);
+    return true;
+  });
+  return novelsList.length === library.novelsList.length && savedChapters.length === library.savedChapters.length
+    ? library
+    : { novelsList, savedChapters };
 };
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -372,15 +403,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // ignore
     }
-    return SAMPLE_CHAPTERS.map(chapter => ({
-      id: chapter.id,
-      novelId: DEFAULT_NOVELS.find(novel => chapter.bookTitle.startsWith(novel.title))?.id,
-      novelTitle: chapter.bookTitle,
-      title: chapter.chapterTitle,
-      originalText: chapter.chineseContent,
-      vietphraseText: '',
-      savedAt: 0,
-    }));
+    return [];
   });
 
   // Load Settings
@@ -388,7 +411,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const stored = readConvertPreference('convert_reader_settings');
       if (stored) {
-        return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+        return normalizeSettings(JSON.parse(stored));
       }
     } catch {
       // ignore
@@ -419,7 +442,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     initialChinese: string;
     initialVietnamese: string;
     initialCategory: NameItem['category'];
-    target?: 'name' | 'vietphrase';
+    target?: 'name' | 'name_main' | 'vietphrase';
     style?: TranslationStyle;
   }>({
     isOpen: false,
@@ -431,8 +454,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Active translation state
   const [activeRawText, setActiveRawText] = useState('');
   const [activeChapterTitle, setActiveChapterTitle] = useState('');
-  const [activeNovelTitle, setActiveNovelTitle] = useState('Đấu Phá Thương Khung');
-  const [activeNovelId, setActiveNovelId] = useState('novel-1');
+  const [activeNovelTitle, setActiveNovelTitle] = useState('Thiên Hắc Thỉnh Điểm Đăng');
+  const [activeNovelId, setActiveNovelId] = useState(DEFAULT_NOVEL_ID);
 
   const [storageReady, setStorageReady] = useState(false);
   const [dictionaryLoadStatus, setDictionaryLoadStatus] = useState('');
@@ -451,12 +474,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     window.alert('Không lưu được dữ liệu. Có thể bộ nhớ trình duyệt đã đầy hoặc bị chặn. Hãy xuất EPUB hoặc sao lưu và thử lại.');
   };
   const commitLibrary = (change: (current: LibraryData) => LibraryData) => enqueue(async () => {
-    const next = change(libraryRef.current);
+    const next = normalizeLibraryData(change(libraryRef.current));
     await writeAppValue('library', next);
     libraryRef.current = next;
     setNovelsList(next.novelsList);
     setSavedChapters(next.savedChapters);
   });
+
+  useEffect(() => subscribeDictionaryChanges(stores => {
+    if (!stores.length) return;
+    void enqueue(async () => {
+      const changed = new Set(stores);
+      const map = (rows: any[]) => rowsToDictionaryMap(rows);
+      if (changed.has(STORE_NAMES)) setNamesList(await readStore<NameItem>(STORE_NAMES));
+      if (changed.has(STORE_NAMES_MAIN)) setNamesMainMap(map(await readStore<any>(STORE_NAMES_MAIN)));
+      if (changed.has(STORE_VIETPHRASE)) setVietphraseMap(rowsToVietphraseMap(await readStore<any>(STORE_VIETPHRASE)));
+      if (changed.has(STORE_LUAT_NHAN)) setLuatNhanMap(Object.fromEntries((await readStore<any>(STORE_LUAT_NHAN)).map(row => [row.pattern, row.translation])));
+      if (changed.has(STORE_PRONOUNS)) setPronounsMap(map(await readStore<any>(STORE_PRONOUNS)));
+      if (changed.has(STORE_IGNORED)) setIgnoredPhrasesList((await readStore<any>(STORE_IGNORED)).map(row => row.phrase));
+      if (changed.has(STORE_PHIEN_AM)) setPhienAmMap(map(await readStore<any>(STORE_PHIEN_AM)));
+    }).catch(reportStorageError);
+  }), []);
 
   useEffect(() => {
     let active = true;
@@ -466,12 +504,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         library = libraryRef.current;
         await writeAppValue('library', library);
       }
-      const storedSettings = await readAppValue<AppSettings>('settings') || settingsRef.current;
+      const normalizedLibrary = normalizeLibraryData(library);
+      if (normalizedLibrary !== library) {
+        library = normalizedLibrary;
+        await writeAppValue('library', library);
+      }
+      const storedSettings = normalizeSettings(await readAppValue<AppSettings>('settings') || settingsRef.current);
       const stats = await updateReadingStats(current => current, statsRef.current);
       await writeAppValue('settings', storedSettings);
       await initializeDefaultDictionaries((message, percent) => { if (active) setDictionaryLoadStatus(`${message} ${percent}%`); });
       await loadMeaningStyles();
-      const stores = await Promise.all(DICTIONARY_STORES.map(name => readStore<any>(name)));
       if (!active) return;
       libraryRef.current = library;
       settingsRef.current = storedSettings;
@@ -480,14 +522,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSavedChapters(library.savedChapters);
       setSettings(storedSettings);
       setReadingStats(stats);
-      setNamesList(stores[0]);
-      const map = (rows: any[]) => Object.fromEntries(rows.map(row => [row.chinese, row.vietnamese]));
-      setNamesMainMap(map(stores[1]));
-      setPhienAmMap(map(stores[6]));
-      setVietphraseMap(map(stores[2]));
-      setLuatNhanMap(Object.fromEntries(stores[3].map(row => [row.pattern, row.translation])));
-      setPronounsMap(map(stores[4]));
-      setIgnoredPhrasesList(stores[5].map(row => row.phrase));
+      const map = (rows: any[]) => rowsToDictionaryMap(rows);
+      // Load stores one at a time. Loading all seven in parallel temporarily kept
+      // both every IndexedDB row and every converted lookup table in memory.
+      setNamesList(await readStore<any>(STORE_NAMES));
+      setNamesMainMap(map(await readStore<any>(STORE_NAMES_MAIN)));
+      setVietphraseMap(rowsToVietphraseMap(await readStore<any>(STORE_VIETPHRASE)));
+      setLuatNhanMap(Object.fromEntries((await readStore<any>(STORE_LUAT_NHAN)).map(row => [row.pattern, row.translation])));
+      setPronounsMap(map(await readStore<any>(STORE_PRONOUNS)));
+      setIgnoredPhrasesList((await readStore<any>(STORE_IGNORED)).map(row => row.phrase));
+      setPhienAmMap(map(await readStore<any>(STORE_PHIEN_AM)));
+      if (!active) return;
       setStorageReady(true);
       // Keep legacy copies as a recovery source; IndexedDB is authoritative after migration.
     }).catch(error => { if (active) setStorageError(String(error)); });
@@ -558,7 +603,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const openInspectModal = (chinese: string, vietnamese?: string, category?: NameItem['category'], target?: 'name' | 'vietphrase', style?: TranslationStyle) => {
+  const openInspectModal = (chinese: string, vietnamese?: string, category?: NameItem['category'], target?: 'name' | 'name_main' | 'vietphrase', style?: TranslationStyle) => {
     setInspectModal({
       isOpen: true,
       initialChinese: chinese,
@@ -609,6 +654,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
+  const addNameMain = (chinese: string, vietnamese: string): boolean => {
+    const cleanCn = chinese.trim();
+    const cleanVn = vietnamese.trim();
+    if (!cleanCn || !cleanVn) return false;
+    setNamesMainMap(previous => ({ ...previous, [cleanCn]: cleanVn }));
+    saveNamesMainBatch([{ chinese: cleanCn, vietnamese: cleanVn }]).catch(console.error);
+    return true;
+  };
+
+  const deleteNameMain = (chinese: string) => {
+    const cleanCn = chinese.trim();
+    if (!cleanCn) return;
+    setNamesMainMap(previous => {
+      const next = { ...previous };
+      delete next[cleanCn];
+      return next;
+    });
+    deleteDictionaryKeys(STORE_NAMES_MAIN, [cleanCn]).catch(console.error);
+  };
+
   const updateName = (id: string, updates: Partial<NameItem>) => {
     setNamesList(prev => {
       const updated = prev.map(item => {
@@ -646,23 +711,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addVietphrase = (chinese: string, vietnamese: string) => {
     if (!chinese.trim() || !vietnamese.trim()) return;
     const cn = chinese.trim();
+    const normalizedCn = simplifyChinese(cn);
     const vn = vietnamese.trim();
 
     setVietphraseMap(prev => ({
       ...prev,
+      [normalizedCn]: vn,
       [cn]: vn,
     }));
-    saveVietphraseItem(cn, vn).catch(console.error);
+    const rows = normalizedCn === cn ? [{ chinese: cn, vietnamese: vn }] : [{ chinese: cn, vietnamese: vn }, { chinese: normalizedCn, vietnamese: vn }];
+    saveVietphraseBatch(rows).catch(console.error);
   };
 
   const deleteVietphrase = (chinese: string) => {
     const cn = chinese.trim();
+    const normalizedCn = simplifyChinese(cn);
     setVietphraseMap(prev => {
       const next = { ...prev };
       delete next[cn];
+      delete next[normalizedCn];
       return next;
     });
-    deleteVietphraseItem(cn).catch(console.error);
+    Promise.all([...new Set([cn, normalizedCn])].map(key => deleteVietphraseItem(key))).catch(console.error);
   };
 
   const addIgnoredPhrase = (chinese: string) => {
@@ -912,7 +982,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         switch (dictType) {
           case 'names_main': setNamesMainMap(map); break;
-          case 'vietphrase': setVietphraseMap(map); break;
+          case 'vietphrase': setVietphraseMap(rowsToVietphraseMap(rows)); break;
           case 'phienam': setPhienAmMap(map); break;
           case 'luatnhan': setLuatNhanMap(map); break;
           case 'pronouns': setPronounsMap(map); break;
@@ -948,7 +1018,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       switch (dictType) {
         case 'names_main': setNamesMainMap(map); break;
-        case 'vietphrase': setVietphraseMap(map); break;
+        case 'vietphrase': setVietphraseMap(rowsToVietphraseMap(rows)); break;
         case 'phienam': setPhienAmMap(map); break;
         case 'luatnhan': setLuatNhanMap(map); break;
         case 'pronouns': setPronounsMap(map); break;
@@ -1082,9 +1152,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const importAllDatabasesJson = (text: string): Promise<{ success: boolean; message: string }> => enqueue(async () => {
     try {
       const data = parseBackup(text);
-      const library = { novelsList: data.novelsList ?? libraryRef.current.novelsList,
-        savedChapters: data.savedChapters ?? libraryRef.current.savedChapters };
-      const preferences = data.settings ?? settingsRef.current;
+      const library = normalizeLibraryData({ novelsList: data.novelsList ?? libraryRef.current.novelsList,
+        savedChapters: data.savedChapters ?? libraryRef.current.savedChapters });
+      const preferences = normalizeSettings(data.settings ?? settingsRef.current);
       const stats = normalizeReadingStats(data.readingStats ?? statsRef.current);
       await replaceStores(backupStores(data), { library, settings: preferences, readingStats: stats, dictionariesInitialized: true, ...(data.readerState ? { readerState: data.readerState } : {}), ...(data.meaningStyles !== undefined ? { [MEANING_STYLES_KEY]: data.meaningStyles, [MEANING_STYLES_FALLBACK_KEY]: data.meaningStylesFallback ?? null } : {}) });
       if (data.meaningStyles !== undefined) applyMeaningStyles(data.meaningStyles, data.meaningStylesFallback ?? null);
@@ -1099,7 +1169,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (data.namesList !== undefined) setNamesList(data.namesList);
       if (data.namesMainMap !== undefined) setNamesMainMap(data.namesMainMap);
       if (data.phienAmMap !== undefined) setPhienAmMap(data.phienAmMap);
-      if (data.vietphraseMap !== undefined) setVietphraseMap(data.vietphraseMap);
+      if (data.vietphraseMap !== undefined) setVietphraseMap(rowsToVietphraseMap(Object.entries(data.vietphraseMap).map(([chinese, vietnamese]) => ({ chinese, vietnamese }))));
       if (data.luatNhanMap !== undefined) setLuatNhanMap(data.luatNhanMap);
       if (data.pronounsMap !== undefined) setPronounsMap(data.pronounsMap);
       if (data.ignoredPhrasesList !== undefined) setIgnoredPhrasesList(data.ignoredPhrasesList);
@@ -1186,7 +1256,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNamesList(stores[STORE_NAMES] as NameItem[]);
     setNamesMainMap(map(STORE_NAMES_MAIN));
     setPhienAmMap(map(STORE_PHIEN_AM));
-    setVietphraseMap(map(STORE_VIETPHRASE));
+    setVietphraseMap(rowsToVietphraseMap(stores[STORE_VIETPHRASE] as { chinese: string; vietnamese: string }[]));
     setLuatNhanMap(Object.fromEntries((stores[STORE_LUAT_NHAN] as { pattern: string; translation: string }[]).map(row => [row.pattern, row.translation])));
     setPronounsMap(map(STORE_PRONOUNS));
     setIgnoredPhrasesList((stores[STORE_IGNORED] as { phrase: string }[]).map(row => row.phrase));
@@ -1295,6 +1365,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ...current, savedChapters: current.savedChapters.filter(chapter => chapter.id !== id),
   }));
 
+  // A single snapshot write is substantially cheaper than committing once for every
+  // selected chapter. The storage queue still serializes it with other library edits.
+  const deleteSavedChapters = async (ids: string[]): Promise<number> => {
+    const idsToDelete = new Set(ids);
+    if (!idsToDelete.size) return 0;
+    let deleted = 0;
+    await commitLibrary(current => {
+      const remaining = current.savedChapters.filter(chapter => {
+        const remove = idsToDelete.has(chapter.id);
+        if (remove) deleted++;
+        return !remove;
+      });
+      return deleted ? { ...current, savedChapters: remaining } : current;
+    });
+    return deleted;
+  };
+
   if (storageError) return <div role="alert" className="p-6">Không mở được dữ liệu: {storageError}. Hãy kiểm tra dung lượng và quyền lưu trữ rồi tải lại trang.</div>;
   if (!storageReady) return <div role="status" className="p-6">{dictionaryLoadStatus || 'Đang mở dữ liệu…'}</div>;
 
@@ -1311,6 +1398,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         logoutGoogle,
         namesList,
         addName,
+        addNameMain,
+        deleteNameMain,
         updateName,
         deleteName,
         exportNamesTxt,
@@ -1354,6 +1443,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         saveChapter,
         updateSavedChapter,
         deleteSavedChapter,
+        deleteSavedChapters,
         settings,
         updateSettings,
         inspectModal,

@@ -22,6 +22,6 @@ export function SavedWebFilePicker({ label, disabled, onSelect }: { label: strin
         finally { setReading(false); }
       }} />
     </div>
-    {error && <p role="alert" className="text-xs text-red-500">{error}</p>}
+    <p role="alert" className="min-h-4 truncate text-xs text-red-500" title={error || undefined}>{error}</p>
   </div>;
 }

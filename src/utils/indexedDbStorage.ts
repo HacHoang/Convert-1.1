@@ -7,8 +7,9 @@
 import { NameItem } from '../data/defaultNames';
 
 const DB_NAME = 'ConvertAppDB';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 export const STORE_APP = 'app_store';
+export const STORE_BATCH_DRAFT = 'batch_draft_store';
 
 export const STORE_NAMES = 'names_store'; // Names phụ / cá nhân
 export const STORE_NAMES_MAIN = 'names_main_store'; // Names chính gốc (136k)
@@ -26,6 +27,7 @@ export function openDB(): Promise<IDBDatabase> {
       const db = (event.target as IDBOpenDBRequest).result;
 
       if (!db.objectStoreNames.contains(STORE_APP)) db.createObjectStore(STORE_APP);
+      if (!db.objectStoreNames.contains(STORE_BATCH_DRAFT)) db.createObjectStore(STORE_BATCH_DRAFT, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORE_NAMES)) {
         const store = db.createObjectStore(STORE_NAMES, { keyPath: 'id' });
         store.createIndex('chinese', 'chinese', { unique: false });
@@ -71,6 +73,24 @@ export const DICTIONARY_STORES = [STORE_NAMES, STORE_NAMES_MAIN, STORE_VIETPHRAS
 const snapshotKey = (store: string) => `dictionarySnapshot:${store}`;
 const deletedKey = (store: string) => `dictionaryDeleted:${store}`;
 const keyPathFor = (store: string) => store === STORE_NAMES ? 'id' : store === STORE_LUAT_NHAN ? 'pattern' : store === STORE_IGNORED ? 'phrase' : 'chinese';
+const DICTIONARY_CHANNEL = 'hermes-dictionary-changes-v1';
+
+function announceDictionaryChanges(stores: string[]) {
+  const changed = stores.filter(store => DICTIONARY_STORES.includes(store));
+  if (!changed.length || typeof BroadcastChannel === 'undefined') return;
+  const channel = new BroadcastChannel(DICTIONARY_CHANNEL);
+  channel.postMessage(changed);
+  channel.close();
+}
+
+export function subscribeDictionaryChanges(listener: (stores: string[]) => void) {
+  if (typeof BroadcastChannel === 'undefined') return () => {};
+  const channel = new BroadcastChannel(DICTIONARY_CHANNEL);
+  channel.onmessage = event => {
+    if (Array.isArray(event.data)) listener(event.data.filter((store): store is string => typeof store === 'string' && DICTIONARY_STORES.includes(store)));
+  };
+  return () => channel.close();
+}
 
 async function mutate(stores: string[], action: (tx: IDBTransaction) => void): Promise<void> {
   const db = await openDB();
@@ -126,8 +146,50 @@ export async function readAppValue<T>(key: string): Promise<T | undefined> {
 export const writeAppValue = (key: string, value: unknown): Promise<void> =>
   mutate([STORE_APP], tx => { tx.objectStore(STORE_APP).put(value, key); });
 
-const writeRows = (name: string, rows: unknown[]): Promise<void> => rows.length ?
-  mutate([name], tx => { for (const row of rows) tx.objectStore(name).put(row); }) : Promise.resolve();
+const BATCH_DRAFT_META_KEY = 'batchDraftMeta';
+
+/** One resumable batch queue. Chapters are written independently to avoid repeatedly serializing a whole book. */
+export async function readBatchDraft<T extends { id: string }>(): Promise<{ meta: Record<string, unknown> | undefined; chapters: T[] }> {
+  const db = await openDB();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE_APP, STORE_BATCH_DRAFT], 'readonly');
+      const meta = tx.objectStore(STORE_APP).get(BATCH_DRAFT_META_KEY);
+      const chapters = tx.objectStore(STORE_BATCH_DRAFT).getAll();
+      tx.oncomplete = () => resolve({ meta: meta.result, chapters: chapters.result || [] });
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('Không thể đọc nháp dịch hàng loạt'));
+    });
+  } finally { db.close(); }
+}
+
+export const saveBatchDraftMeta = (meta: Record<string, unknown>): Promise<void> =>
+  mutate([STORE_APP], tx => { tx.objectStore(STORE_APP).put(meta, BATCH_DRAFT_META_KEY); });
+
+export const saveBatchDraftChapter = <T extends { id: string }>(chapter: T): Promise<void> =>
+  mutate([STORE_BATCH_DRAFT], tx => { tx.objectStore(STORE_BATCH_DRAFT).put(chapter); });
+
+export const saveBatchDraftChapters = <T extends { id: string }>(chapters: T[]): Promise<void> =>
+  !chapters.length ? Promise.resolve() : mutate([STORE_BATCH_DRAFT], tx => { for (const chapter of chapters) tx.objectStore(STORE_BATCH_DRAFT).put(chapter); });
+
+export async function replaceBatchDraft<T extends { id: string }>(chapters: T[], meta: Record<string, unknown>): Promise<void> {
+  await mutate([STORE_APP, STORE_BATCH_DRAFT], tx => {
+    tx.objectStore(STORE_BATCH_DRAFT).clear();
+    for (const chapter of chapters) tx.objectStore(STORE_BATCH_DRAFT).put(chapter);
+    tx.objectStore(STORE_APP).put(meta, BATCH_DRAFT_META_KEY);
+  });
+}
+
+export const deleteBatchDraftChapters = (ids: string[]): Promise<void> =>
+  !ids.length ? Promise.resolve() : mutate([STORE_BATCH_DRAFT], tx => { for (const id of ids) tx.objectStore(STORE_BATCH_DRAFT).delete(id); });
+
+export const clearBatchDraft = (): Promise<void> =>
+  mutate([STORE_APP, STORE_BATCH_DRAFT], tx => { tx.objectStore(STORE_BATCH_DRAFT).clear(); tx.objectStore(STORE_APP).delete(BATCH_DRAFT_META_KEY); });
+
+const writeRows = async (name: string, rows: unknown[]): Promise<void> => {
+  if (!rows.length) return;
+  await mutate([name], tx => { for (const row of rows) tx.objectStore(name).put(row); });
+  announceDictionaryChanges([name]);
+};
 
 export async function deleteDictionaryKeys(name: string, keys: string[]): Promise<void> {
   if (!DICTIONARY_STORES.includes(name)) throw new Error('Bảng từ điển không hợp lệ');
@@ -141,6 +203,7 @@ export async function deleteDictionaryKeys(name: string, keys: string[]): Promis
     };
     for (const key of keys) tx.objectStore(name).delete(key);
   });
+  announceDictionaryChanges([name]);
 }
 const deleteKeys = deleteDictionaryKeys;
 
@@ -166,6 +229,7 @@ export async function replaceStores(stores: Record<string, unknown[]>, appValues
     }
     for (const [key, value] of Object.entries(appValues)) app.put(value, key);
   });
+  announceDictionaryChanges(Object.keys(stores));
 }
 
 export interface VietphraseRecord { chinese: string; vietnamese: string }

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { countLibraryChapters } from '../utils/libraryMembership';
 import type { NovelBook, SavedChapter } from '../context/AppContext';
 import { localReadingDay, summarizeReadingStats, type ReadingStats } from '../utils/readingStats';
 
@@ -20,7 +21,7 @@ export function ReadingStatsMetrics({ stats, novels, chapters, expanded }: {
     [number(novels.length), 'Truyện đã lưu', 'Số bộ truyện hiện có trong Thư viện. Xóa truyện sẽ giảm chỉ số này.'],
     [number(stats.totalReadBooks), 'Truyện đã đọc', 'Số truyện khác nhau đã đọc ít nhất 30 giây trong Thư viện; không có nghĩa là đã đọc hết truyện.'],
     [duration(stats.totalReadMinutes * 60), 'Thời gian đọc', 'Thời gian đọc trong Thư viện khi cửa sổ đang hiển thị và có tiêu điểm. Tạm dừng sau 3 phút không tương tác; không tính tải hoặc dịch truyện.'],
-    [number(chapters.length), 'Chương đã lưu', 'Số chương hiện được lưu trong Thư viện, kể cả chương chưa mở đọc.'],
+    [number(countLibraryChapters(chapters, novels)), 'Chương đã lưu', 'Số chương thuộc các truyện hiện có trong Thư viện, kể cả chương chưa mở đọc.'],
     [duration(summary.todaySeconds), 'Đọc hôm nay', 'Thời gian đọc hôm nay theo ngày địa phương trên thiết bị.'],
     [`${number(summary.currentStreak)} ngày`, 'Chuỗi ngày đọc', 'Mỗi ngày đọc ít nhất 1 phút. Nếu hôm nay chưa đủ 1 phút, chuỗi tới hôm qua vẫn được giữ trong hôm nay.'],
     [number(summary.completedChapters), 'Chương đọc hết', 'Chương khác nhau đã đọc ít nhất 30 giây và đã tới 90% nội dung trở lên. Đọc lại không cộng trùng.'],
@@ -37,6 +38,8 @@ export function ReadingStatsMetrics({ stats, novels, chapters, expanded }: {
         <div className="mt-0.5 text-[10px] leading-4 text-muted">{label}</div>
       </button>)}
     </div>
-    {description && <p role="status" className="mt-2 rounded-lg bg-raised p-2 text-[10px] leading-relaxed text-muted">{description}</p>}
+    <div className="min-h-12 pt-2" aria-live="polite">
+      <p role="status" className={`line-clamp-2 rounded-lg p-2 text-[10px] leading-relaxed ${description ? 'bg-raised text-muted' : 'invisible'}`} title={description || undefined}>{description || '\u00a0'}</p>
+    </div>
   </div>;
 }

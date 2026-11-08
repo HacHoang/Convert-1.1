@@ -55,7 +55,7 @@ export function MeaningStyleEditor({ kind, chinese, raw, onClose }: { kind: Mean
             <div className="flex flex-wrap gap-1.5">{MEANING_STYLE_OPTIONS.map(([style, label]) => <label key={style} className={`flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs ${row.styles.includes(style) ? 'border-accent/40 bg-accent-soft text-accent' : 'border-line text-muted hover:bg-raised'}`}><input type="checkbox" checked={row.styles.includes(style)} onChange={event => select(index, event.target.checked ? [...row.styles, style] : row.styles.filter(value => value !== style))} className="accent-accent" />{label}</label>)}</div>
           </fieldset>
         </details>)}
-        {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
+        <p role="alert" className="min-h-4 truncate text-xs text-rose-400" title={error || undefined}>{error}</p>
       </div>
       <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line p-3">
         <button type="button" disabled={busy} onClick={onClose} className="rounded-lg px-3 py-2 text-xs text-muted hover:bg-raised">Hủy</button>

@@ -48,14 +48,16 @@ export function parseBackup(text: string): BackupData {
   for (const [key, fields] of [
     ['namesList', ['note']],
     ['savedChapters', ['novelId', 'chapterPrefix', 'chapterName', 'filePath', 'novelTitle', 'hanvietText', 'sourceUrl']],
-    ['novelsList', ['originalTitle', 'author', 'coverUrl', 'description', 'genre', 'filePath', 'translationStyle']],
+    ['novelsList', ['originalTitle', 'author', 'coverUrl', 'description', 'genre', 'filePath', 'translationStyle', 'publicationStatus', 'review']],
   ] as const) {
     const values = data[key] as Record<string, unknown>[] | undefined;
     if (values && values.some(row => fields.some(field => row[field] !== undefined && typeof row[field] !== 'string'))) return fail();
   }
   if ((data.novelsList as Record<string, unknown>[] | undefined)?.some(row =>
     (row.genres !== undefined && (!Array.isArray(row.genres) || !row.genres.every(value => typeof value === 'string'))) ||
-    (row.isFavorite !== undefined && typeof row.isFavorite !== 'boolean'))) return fail();
+    (row.isFavorite !== undefined && typeof row.isFavorite !== 'boolean') ||
+    (row.publicationStatus !== undefined && !['ongoing', 'completed'].includes(String(row.publicationStatus))) ||
+    (row.rating !== undefined && (!Number.isInteger(row.rating) || Number(row.rating) < 1 || Number(row.rating) > 5)))) return fail();
   for (const key of ['namesList', 'novelsList', 'savedChapters']) {
     const values = data[key] as { id: string }[] | undefined;
     if (values && (values.some(v => !v.id.trim()) || new Set(values.map(v => v.id)).size !== values.length)) return fail();
@@ -63,7 +65,7 @@ export function parseBackup(text: string): BackupData {
   if (data.settings !== undefined) {
     const s = data.settings;
     if (!object(s) || !['light', 'dark', 'sepia', 'system'].includes(String(s.theme)) ||
-      !['sans', 'serif'].includes(String(s.fontFamily)) || !['responsive', 'mobile_frame'].includes(String(s.displayMode)) ||
+      !['sans', 'reading', 'serif'].includes(String(s.fontFamily)) || !['responsive', 'mobile_frame'].includes(String(s.displayMode)) ||
       typeof s.prioritizeNames !== 'boolean' || typeof s.capitalizeSentences !== 'boolean' ||
       typeof s.fontSize !== 'number' || s.fontSize < 8 || s.fontSize > 100 ||
       typeof s.lineHeight !== 'number' || s.lineHeight < 0.5 || s.lineHeight > 5 ||

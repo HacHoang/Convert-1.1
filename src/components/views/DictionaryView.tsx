@@ -1,4 +1,5 @@
 import { loadReferenceDictionary } from '../../utils/referenceDictionary';
+import { quickTranslateOneMeaningForBatch } from '../../utils/quickTranslatorPort';
 import { DictionaryPagination } from '../DictionaryPagination';
 import { useBackgroundTasks } from '../../context/BackgroundTasks';
 import { DictionaryGroups } from '../DictionaryGroups';
@@ -214,8 +215,7 @@ export const DictionaryView: React.FC = () => {
 
   // 1. Dữ liệu Vietphrase gộp (DEFAULT + User)
   const fullVietphrase = useMemo(() => {
-    const map = vietphraseMap;
-    return Object.entries(map).map(([chinese, vietnamese]) => ({
+    return Object.entries(vietphraseMap).map(([chinese, vietnamese]) => ({
       chinese,
       vietnamese,
     }));
@@ -255,12 +255,20 @@ export const DictionaryView: React.FC = () => {
   }, [pronounsMap]);
 
   const fullIgnored = useMemo(() => {
-    return ignoredPhrasesList.map(phrase => ({
+    // Translate together so the large dictionaries are prepared only once.
+    const meanings = activeTab === 'ignored_chinese' ? quickTranslateOneMeaningForBatch(ignoredPhrasesList.join('\n'), namesList, vietphraseMap, {
+        namesMainMap, phienAmMap, luatNhanMap, pronounsMap,
+        applyIgnoredPhrases: false,
+        translationAlgorithm: settings.quickTranslationAlgorithm,
+        prioritizedName: settings.prioritizeNames,
+        wrapType: 0,
+      }).split('\n') : [];
+    return ignoredPhrasesList.map((phrase, index) => ({
       chinese: phrase,
-      vietnamese: '(Lọc bỏ watermark/quảng cáo)',
+      vietnamese: meanings[index]?.trim() || '',
       type: 'Cụm bỏ qua'
     }));
-  }, [ignoredPhrasesList]);
+  }, [ignoredPhrasesList, activeTab, namesList, vietphraseMap, namesMainMap, phienAmMap, luatNhanMap, pronounsMap, settings.quickTranslationAlgorithm, settings.prioritizeNames]);
 
   // Lọc dữ liệu theo tab và từ khóa
   const filteredData = useMemo(() => {
@@ -324,7 +332,7 @@ export const DictionaryView: React.FC = () => {
         );
       }
       case 'ignored_chinese':
-        return fullIgnored.filter(item => !term || item.chinese.toLowerCase().includes(term));
+        return fullIgnored.filter(item => !term || item.chinese.toLowerCase().includes(term) || item.vietnamese.toLowerCase().includes(term));
       default:
         return [];
     }
@@ -754,7 +762,16 @@ export const DictionaryView: React.FC = () => {
         </div>
       </div>
 
-      <DictionaryGroups value={activeTab} onChange={handleTabChange} counts={{ vietphrase: fullVietphrase.length, names_main: fullNamesMain.length, names_custom: namesList.length, phienam: fullPhienAm.length, luatnhan: fullLuatNhan.length, pronouns: fullPronouns.length, ignored_chinese: ignoredPhrasesList.length, ...Object.fromEntries(Object.entries(referenceData).map(([key, rows]) => [key, rows?.length])) }} />
+      <DictionaryGroups value={activeTab} onChange={handleTabChange} counts={{
+        ...Object.fromEntries(Object.entries(referenceData).map(([key, rows]) => [key, rows?.length])),
+        vietphrase: fullVietphrase.length,
+        names_main: fullNamesMain.length,
+        names_custom: namesList.length,
+        phienam: fullPhienAm.length,
+        luatnhan: fullLuatNhan.length,
+        pronouns: fullPronouns.length,
+        ignored_chinese: ignoredPhrasesList.length,
+      }} />
 
       {/* PER-TAB ACTION TOOLBAR: TÌM KIẾM, IMPORT/EXPORT FILE TXT VÀ THÊM MỚI */}
       <div className={`px-4 py-2.5 border-b shrink-0 flex flex-wrap items-center justify-between gap-2 text-xs ${
@@ -812,7 +829,7 @@ export const DictionaryView: React.FC = () => {
           <option value="original">Thứ tự gốc</option><option value="source-asc">Từ gốc: tăng dần</option><option value="source-desc">Từ gốc: giảm dần</option><option value="length-desc">Từ dài trước</option><option value="length-asc">Từ ngắn trước</option><option value="meaning-asc">Nghĩa Việt: A–Z</option><option value="meaning-desc">Nghĩa Việt: Z–A</option>
         </select>
         {sorting && <span role="status" className="text-xs text-muted">Đang sắp xếp…</span>}
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             aria-label="Nhập TXT" disabled={isReadOnly || isProcessing || tableLoading} onClick={() => singleFileInputRef.current?.click()}
             className={`flex items-center gap-1 px-1.5 @min-[768px]/app:px-2.5 py-1.5 rounded-lg border cursor-pointer hover:border-accent/50 transition-colors ${
@@ -843,7 +860,8 @@ export const DictionaryView: React.FC = () => {
             <span>Thêm</span>
           </button>
 
-          {!isReadOnly && (
+          {false && !isReadOnly && (
+            <div className="basis-full flex justify-end border-t border-line pt-2">
             <button
               onClick={handleClearCurrentTab}
               disabled={isDeleting || isProcessing || tableLoading}
@@ -853,14 +871,15 @@ export const DictionaryView: React.FC = () => {
             >
               <Trash2 size={13} />
             </button>
+            </div>
           )}
         </div>
       </div>
 
       {referenceTab && <p className="px-4 py-2 text-xs text-muted">{referenceTab === 'vietphrase_merged' ? 'Bản file gộp lưu riêng trên thiết bị • Có thể sửa, xóa và xuất .txt. Nhập vào bảng Vietphrase nếu muốn dùng để dịch.' : 'Tệp tham khảo gốc • Chỉ đọc, tìm kiếm và xuất .txt.'}</p>}
-      {activeTab === 'ignored_chinese' && <p className="px-4 py-2 text-xs text-muted">Các cụm đang được bỏ qua khi dịch • Sửa hoặc xóa sẽ cập nhật danh sách trên thiết bị.</p>}
+      {activeTab === 'ignored_chinese' && <p className="px-4 py-2 text-xs text-muted">Các cụm đang được bỏ qua khi dịch • Nghĩa tiếng Việt được dịch tự động để tra cứu • Sửa hoặc xóa sẽ cập nhật danh sách trên thiết bị.</p>}
       {/* BULK ACTION BAR KHI ĐANG CHỌN NHIỀU TỪ */}
-      {selectedKeys.size > 0 && (
+      {false && selectedKeys.size > 0 && (
         <div className="px-4 py-2 bg-accent-soft/90 border-b border-accent/80 text-accent text-xs flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-1 duration-150">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-main">Đã chọn {selectedKeys.size} từ</span>
@@ -911,10 +930,22 @@ export const DictionaryView: React.FC = () => {
                 title={`Chọn hoặc bỏ chọn tất cả ${filteredData.length} mục khớp bộ lọc trên mọi trang`}
                 aria-label="Chọn tất cả kết quả trên mọi trang"
               />
-              <span className="w-1/3 min-w-[120px]">Từ Gốc Tiếng Trung (Bên trái)</span>
+              <span className="w-1/3 min-w-[120px]">Từ gốc tiếng Trung</span>
               <span className="flex-1">Nghĩa Tiếng Việt</span>
               {meaningKind && <span className="hidden w-60 shrink-0 @min-[768px]/app:block">Văn phong theo nghĩa</span>}
-              <span className="w-16 text-right">Thao tác</span>
+              <div className="flex w-16 items-center justify-end gap-1">
+                <span>Thao tác</span>
+                {!isReadOnly && <button
+                  type="button"
+                  onClick={handleRequestBulkDelete}
+                  disabled={selectedKeys.size === 0 || isDeleting || isProcessing || tableLoading}
+                  className="rounded p-1 text-muted transition-colors hover:bg-red-950/30 hover:text-red-400"
+                  title={selectedKeys.size ? `Xóa ${selectedKeys.size.toLocaleString('vi-VN')} mục đã chọn` : 'Chọn mục để xóa'}
+                  aria-label={selectedKeys.size ? `Xóa ${selectedKeys.size} mục đã chọn` : 'Chọn mục để xóa'}
+                >
+                  <Trash2 size={13} />
+                </button>}
+              </div>
             </div>
 
             <div className="divide-y divide-neutral-800/40">
@@ -942,14 +973,14 @@ export const DictionaryView: React.FC = () => {
                       className="rounded border-line bg-raised text-accent w-3.5 h-3.5 cursor-pointer shrink-0"
                     />
 
-                    {/* Cột Từ Gốc Tiếng Trung (Bên trái) - Có thể sửa khi bấm nút Sửa */}
-                    <div className="w-1/3 min-w-[120px] break-words whitespace-normal flex flex-wrap items-center gap-2 font-sans font-medium text-sm">
+                    {/* Cột Từ gốc tiếng Trung - Có thể sửa khi bấm nút Sửa */}
+                    <div className="w-1/3 min-w-[120px] break-words whitespace-normal flex flex-wrap items-center gap-2 font-ui font-medium text-sm">
                       {isEditing ? (
                         <input
                           type="text"
                           value={editingItem.editChinese}
                           onChange={(e) => setEditingItem({ ...editingItem, editChinese: e.target.value })}
-                          className="w-full px-2 py-1 rounded bg-surface border border-accent text-xs text-accent font-serif outline-none"
+                          className="w-full px-2 py-1 rounded bg-surface border border-accent text-xs text-accent font-ui outline-none"
                           placeholder="Từ tiếng Trung"
                         />
                       ) : (
@@ -970,7 +1001,7 @@ export const DictionaryView: React.FC = () => {
                     </div>
 
                     {/* Cột Nghĩa Tiếng Việt / Bản Dịch - Có thể sửa khi bấm nút Sửa */}
-                    <div className="flex-1 min-w-0 font-sans">
+                    <div className="flex-1 min-w-0 font-ui">
                       {isEditing ? (
                         <div className="flex items-center gap-1.5">
                           <input
@@ -1005,7 +1036,7 @@ export const DictionaryView: React.FC = () => {
                       )}
                     </div>
 
-                    {meaningKind && <div className="order-last w-full min-w-0 shrink-0 font-sans @min-[768px]/app:order-none @min-[768px]/app:w-60">
+                    {meaningKind && <div className="order-last w-full min-w-0 shrink-0 font-ui @min-[768px]/app:order-none @min-[768px]/app:w-60">
                       <button type="button" aria-label={`Phân loại văn phong cho ${item.chinese}`} onClick={() => setStyleEditor({ kind: meaningKind, chinese: item.chinese, raw: item.vietnamese })} className="w-full rounded-lg border border-line/70 px-2 py-1.5 text-left text-[11px] text-muted hover:bg-raised hover:text-main">
                         {rowMeanings.slice(0, 2).map(row => <span key={row.meaning} className="mb-1 flex min-w-0 flex-wrap items-center gap-1 last:mb-0"><span className="max-w-full truncate font-medium text-main">{row.meaning || '(Lược bỏ)'}</span>{row.styles.length ? row.styles.slice(0, 2).map(style => <span key={style} className="rounded border border-line bg-raised px-1.5 py-0.5 text-accent">{STYLE_LABELS[style]}</span>) : <span>· Gắn văn phong</span>}{row.styles.length > 2 && <span>+{row.styles.length - 2}</span>}</span>)}
                         {rowMeanings.length > 2 && <span className="mt-1 block text-accent">Xem tất cả {rowMeanings.length} nghĩa</span>}
@@ -1144,7 +1175,7 @@ export const DictionaryView: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="w-full max-w-sm rounded-2xl bg-surface border border-line p-5 text-main shadow-2xl space-y-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-800/60 text-rose-400 flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 rounded-xl bg-raised border border-line text-danger flex items-center justify-center shrink-0">
                 <Trash2 size={20} />
               </div>
               <div>

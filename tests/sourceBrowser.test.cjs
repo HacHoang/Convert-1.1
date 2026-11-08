@@ -21,6 +21,19 @@ test('desktop reader returns captured HTML and rejects invalid protocols before 
   await assert.rejects(api.readInSourceBrowser('https://user:pass@example.org'), /URL/);
   assert.equal(calls, 1);
 });
+test('desktop background fetch uses the bridge without opening the interactive reader', async () => {
+  let opens = 0, fetches = 0;
+  const api = await fixture({
+    open: async url => { opens++; return { url, html: 'interactive' }; },
+    fetch: async url => { fetches++; return { url, html: '<article>background</article>' }; },
+    close: async () => {},
+  });
+  const page = await api.readSourceInBackground('https://example.org/chapter', new AbortController().signal);
+  assert.equal(page.html, '<article>background</article>');
+  assert.equal(api.canFetchSourceInBackground(), true);
+  assert.equal(fetches, 1);
+  assert.equal(opens, 0);
+});
 test('Android uses native reader and cancellation closes it without returning late content', async () => {
   let complete, closes = 0;
   const api = await fixture(undefined, { open: () => new Promise(resolve => { complete = resolve; }), close: async () => { closes++; } });

@@ -1,5 +1,6 @@
 import { downloadFile } from './downloadFile';
 import type { NovelBook, SavedChapter } from '../context/AppContext';
+import { capitalizeLineStarts } from './vietnameseTypography';
 
 function escapeXml(text: string) {
   return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]!);
@@ -42,7 +43,8 @@ export async function createNovelEpub(novel: Pick<NovelBook, 'title' | 'author' 
   }
   ordered.forEach((chapter, index) => {
     const heading = esc(chapter.title || `Chương ${index + 1}`);
-    const paragraphs = (chapter.vietphraseText.trim() || chapter.originalText).split(/\r?\n/).filter(line => line.trim()).map(line => `<p>${esc(line)}</p>`).join('\n');
+    const chapterText = chapter.vietphraseText.trim() ? capitalizeLineStarts(chapter.vietphraseText) : chapter.originalText;
+    const paragraphs = chapterText.split(/\r?\n/).filter(line => line.trim()).map(line => `<p>${esc(line)}</p>`).join('\n');
     zip.file(`EPUB/chapter-${index + 1}.xhtml`, xhtml(heading, `<h1>${heading}</h1>${paragraphs}`));
     nav.push(`<li><a href="chapter-${index + 1}.xhtml">${heading}</a></li>`);
     manifest.push(`<item id="ch${index + 1}" href="chapter-${index + 1}.xhtml" media-type="application/xhtml+xml"/>`);

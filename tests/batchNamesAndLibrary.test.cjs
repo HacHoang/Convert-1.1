@@ -111,6 +111,19 @@ test('differently titled unlabeled parts retain different source under the same 
   assert.equal(result.skipped, 0);
 });
 
+test('stable batch item IDs preserve repeated source chapter numbers and support safe recovery', () => {
+  const saved = chapter({ id: 'saved', originalText: 'first source' });
+  const first = chapter({ originalText: 'first source', sourceUrl: 'batch-draft:item-1' });
+  const missing = chapter({ title: 'Chương 10: another source', originalText: 'second source', sourceUrl: 'batch-draft:item-2' });
+  const recovered = mergeLibraryChapters([saved], [first, missing]);
+  assert.equal(recovered.count, 1);
+  assert.equal(recovered.skipped, 1);
+  assert.equal(recovered.chapters.length, 2);
+  const repeatedSave = mergeLibraryChapters(recovered.chapters, [missing]);
+  assert.equal(repeatedSave.count, 0);
+  assert.equal(repeatedSave.skipped, 1);
+});
+
 test('same chapter revisions with different advertisements or prose never create duplicate rows', () => {
   const first = chapter({ originalText: '正文\n温馨提示: advertisement one' });
   const revised = chapter({ originalText: '正文\n温馨提示: advertisement two' });

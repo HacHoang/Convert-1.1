@@ -1,10 +1,65 @@
 import { readTextFile } from '../../utils/textFile';
+import { createPortal } from 'react-dom';
 import { SpeechTransport } from '../SpeechTransport';
 import { findLibraryChapter } from '../../utils/libraryChapterMerge';
 import { readConvertPreference } from '../../utils/legacyCompatibility';
 import { STYLE_LABELS, resolveTranslationStyle, type TranslationStyleChoice } from '../../utils/translationStyle';
 import { TranslationStyleSelect } from '../TranslationStyleSelect';
 import { VoiceSetupDialog } from '../VoiceSetupDialog';
+function normalizeReaderTypography(text: string) {
+  return text.normalize('NFC')
+    // VietPhrase/Hán Việt uses Vietnamese punctuation in the reader. Keep the
+    // original Chinese punctuation in the source pane and only normalize the
+    // rendered translation text.
+    .replace(/[，]/g, ',')
+    .replace(/[。]/g, '.')
+    .replace(/[！]/g, '!')
+    .replace(/[？]/g, '?')
+    .replace(/[：]/g, ':')
+    .replace(/[；]/g, ';')
+    .replace(/[、]/g, ',')
+    .replace(/[（]/g, '(')
+    .replace(/[）]/g, ')')
+    .replace(/[［］]/g, match => match === '［' ? '[' : ']')
+    .replace(/[【】]/g, match => match === '【' ? '[' : ']')
+    .replace(/[｛｝]/g, match => match === '｛' ? '{' : '}')
+    .replace(/[～]/g, '~')
+    .replace(/……/g, '…')
+    .replace(/[ \t]+([,.;:!?，。！？；：、…])/g, '$1')
+    .replace(/([“‘「『（【])[ \t]+/g, '$1')
+    .replace(/[ \t]+([”’」』）】])/g, '$1')
+    .replace(/[ \t]*([—–])[ \t]*/g, ' $1 ')
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
+function normalizeReaderSegment(text: string, previousText = '') {
+  let normalized = normalizeReaderTypography(text);
+  if (/[“‘「『（【]$/.test(previousText.trimEnd())) normalized = normalized.replace(/^[ \t]+/, '');
+  if (/[,.;:!?]$/.test(previousText.trimEnd()) && /^[“‘]/.test(normalized)) normalized = ` ${normalized}`;
+  if (/^[,.;:!?，。！？；：、…]/.test(normalized)) normalized = normalized.replace(/^[ \t]+/, '');
+  return normalized;
+}
+function separatorBeforeHanvietToken(tokens: TranslatedToken[], index: number) {
+  const current = tokens[index].hanviet.trim();
+  if (!current) return '';
+  let previous = index - 1;
+  while (previous >= 0 && !tokens[previous].hanviet.trim()) previous--;
+  if (previous < 0) return '';
+  if (tokens[index].isPunctuation && /^[,.:;!?\)\]}'\"”’]/.test(current)) return '';
+  if (tokens[previous].isPunctuation && /^[“‘「『《（【(\[]/.test(tokens[previous].original)) return '';
+  return ' ';
+}
+
+function renderHanvietReadingToken(tok: TranslatedToken, isSynced: boolean, customTextColor?: string) {
+  const text = normalizeReaderTypography(tok.hanviet.trim());
+  if (!text) return null;
+  return <span
+    data-token-id={tok.id}
+    style={customTextColor ? { color: customTextColor } : undefined}
+    className={isSynced ? 'sync-highlight font-semibold ring-1 ring-accent/80 rounded-xs px-0.5' : undefined}
+  >{text}</span>;
+}
+
 /**
  * Tab Dịch nhanh (Translate View)
  * - Loại bỏ click tra từ ở phần Vietphrase, chỉ giữ lại ở văn bản tiếng Trung.
@@ -58,8 +113,11 @@ import {
 } from 'lucide-react';
 import { getActiveGeminiApiKey } from '../../utils/apiKeys';
 import { translateWithGemini } from '../../utils/geminiTranslation';
+import { quickTranslateOneMeaningForBatchDetailed } from '../../utils/quickTranslatorPort';
+import { useBackgroundTasks } from '../../context/BackgroundTasks';
 
 export const TranslateView: React.FC = () => {
+  const background = useBackgroundTasks();
   const {
     namesList, namesMainMap, phienAmMap, dictionaryStyleRevision,
     vietphraseMap,
@@ -96,8 +154,6 @@ export const TranslateView: React.FC = () => {
   const [aiTranslation, setAiTranslation] = useState<{ sourceText: string; style: string; text: string } | null>(null);
   const [isAiTranslating, setIsAiTranslating] = useState(false);
   
-  // Toasts & UI state (Chuẩn thông báo: "Đã lưu" hoặc "Lỗi" màu đỏ)
-  const [toastState, setToastState] = useState<{ message: string; isError?: boolean } | null>(null);
   const [isReadingMode, setIsReadingMode] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
 
@@ -142,6 +198,8 @@ export const TranslateView: React.FC = () => {
     hanvietText?: string;
     vietphraseText?: string;
   }>({ text: '', source: null, x: 0, y: 0, visible: false });
+  const [pendingDictionaryAction, setPendingDictionaryAction] = useState<'ignore' | 'delete' | null>(null);
+  useEffect(() => { if (!selectionInfo.visible) setPendingDictionaryAction(null); }, [selectionInfo.visible]);
 
   // Tỷ lệ phần trăm chia giữa 2 khung Trung & Vietphrase (15% - 85%)
   const [splitPercent, setSplitPercent] = useState<number>(15);
@@ -282,6 +340,23 @@ export const TranslateView: React.FC = () => {
     });
   }, [inputChinese, dictionaryStyleRevision, namesMainMap, phienAmMap, namesList, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.prioritizeNames, settings.capitalizeSentences, refreshTick, translationStyle]);
 
+  const currentQuickTranslation = useMemo(() => {
+    if (!inputChinese.trim()) return null;
+    // HTMLTextAreaElement normalizes CRLF/CR to LF in its value. Use the same
+    // representation for segment offsets, otherwise every line break shifts
+    // the synchronized selection by one character (e.g. 第1870章 -> 1870章請).
+    const source = inputChinese.replace(/\r\n?/g, '\n');
+    const detailed = quickTranslateOneMeaningForBatchDetailed(source, namesList, vietphraseMap, {
+      namesMainMap, phienAmMap, luatNhanMap, pronounsMap,
+      ignoredPhrases: ignoredPhrasesList,
+      translationAlgorithm: settings.quickTranslationAlgorithm,
+      wrapType: settings.quickVietphraseWrapType,
+      prioritizedName: settings.prioritizeNames,
+      capitalizeLines: settings.capitalizeSentences,
+    });
+    return { source, vietphrase: detailed.text, segments: detailed.segments, hanviet: translation.hanvietText };
+  }, [inputChinese, namesList, vietphraseMap, namesMainMap, phienAmMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings.quickTranslationAlgorithm, settings.quickVietphraseWrapType, settings.prioritizeNames, settings.capitalizeSentences, translation.hanvietText, refreshTick]);
+
   // Dictionary edits can reflow the whole chapter. Restore before paint and
   // prevent programmatic source scrolling from driving synchronized scrolling.
   useLayoutEffect(() => {
@@ -337,19 +412,21 @@ export const TranslateView: React.FC = () => {
   // Toàn văn Vietphrase đã áp dụng các lựa chọn đổi nghĩa của người dùng (tokenOverrides)
   const effectiveTranslationText = useMemo(() => {
     if (viewMode === 'ai' && activeAiTranslation) return activeAiTranslation;
+    if (currentQuickTranslation && Object.keys(tokenOverrides).length === 0) return currentQuickTranslation.vietphrase;
     if (Object.keys(tokenOverrides).length === 0) {
       return translation.fullText;
     }
     return translation.paragraphs
       .map(p => formatTranslatedTokens(p.tokens, tokenOverrides))
       .join('\n\n');
-  }, [translation, tokenOverrides, viewMode, activeAiTranslation]);
+  }, [translation, tokenOverrides, viewMode, activeAiTranslation, currentQuickTranslation]);
 
   // Danh sách đoạn văn bản (paragraphs) đã áp dụng tokenOverrides dùng cho TTS tuần tự
   const effectiveParagraphs = useMemo(() => {
     if (viewMode === 'ai' && activeAiTranslation) return aiParagraphs;
+    if (currentQuickTranslation && Object.keys(tokenOverrides).length === 0) return currentQuickTranslation.vietphrase.split(/\r?\n\s*\r?\n/);
     return translation.paragraphs.map(p => formatTranslatedTokens(p.tokens, tokenOverrides));
-  }, [translation.paragraphs, tokenOverrides, viewMode, activeAiTranslation, aiParagraphs]);
+  }, [translation.paragraphs, tokenOverrides, viewMode, activeAiTranslation, aiParagraphs, currentQuickTranslation]);
 
   const readableParagraphIndexes = useMemo(() => effectiveParagraphs.flatMap((text, index) => text.trim() ? [index] : []), [effectiveParagraphs]);
   const readingPosition = Math.max(0, readableParagraphIndexes.indexOf(activeReadingParagraphIndex ?? readableParagraphIndexes[0]));
@@ -383,8 +460,7 @@ export const TranslateView: React.FC = () => {
 
 
   const showToast = (msg: string, isError: boolean = false) => {
-    setToastState({ message: msg, isError });
-    setTimeout(() => setToastState(null), 2500);
+    background.notify(msg, isError);
   };
 
   // Nút 1: Mở và dịch file văn bản (.txt và .docx)
@@ -477,7 +553,7 @@ export const TranslateView: React.FC = () => {
       return;
     }
 
-    const currentTranslationText = viewMode === 'hanviet' ? translation.hanvietText : effectiveTranslationText;
+    const currentTranslationText = viewMode === 'hanviet' ? currentQuickTranslation?.hanviet || translation.hanvietText : effectiveTranslationText;
     const displayTitle = viewMode === 'chinese' ? chapterTitle : convertedChapterTitle;
     const formattedContent = `${novelTitle ? `[Bộ truyện]: ${novelTitle}\n` : ''}${displayTitle ? `[Chương]: ${displayTitle}\n` : ''}\n------------------------------------\n\n${currentTranslationText}`;
 
@@ -528,7 +604,7 @@ export const TranslateView: React.FC = () => {
       return;
     }
 
-    const currentTranslationText = viewMode === 'hanviet' ? translation.hanvietText : effectiveTranslationText;
+    const currentTranslationText = viewMode === 'hanviet' ? currentQuickTranslation?.hanviet || translation.hanvietText : effectiveTranslationText;
     const displayTitle = viewMode === 'chinese' ? chapterTitle : convertedChapterTitle;
     const formattedContent = `${novelTitle || 'Tiểu Thuyết'}\n${displayTitle || 'Chương Dịch'}\nXuất bản ngày: ${new Date().toLocaleDateString('vi-VN')}\n====================================\n\n${currentTranslationText}`;
 
@@ -713,7 +789,7 @@ export const TranslateView: React.FC = () => {
         novelTitle: finalNovelTitle,
         originalText: inputChinese,
         vietphraseText: effectiveTranslationText,
-        hanvietText: translation.hanvietText,
+        hanvietText: currentQuickTranslation?.hanviet || translation.hanvietText,
       };
       const match = findLibraryChapter(savedChapters, incoming);
       if (match && !window.confirm(`Thư viện đã có “${match.title}”. Ghi đè bằng bản dịch mới?`)) return;
@@ -967,6 +1043,7 @@ export const TranslateView: React.FC = () => {
 
   // Đồng bộ bôi đen hai chiều (Bidirectional Highlighting) & Nhận diện đa nghĩa
   const handleTextSelection = (source: 'chinese' | 'vietphrase') => {
+    if (inspectModal.isOpen) return;
     const ta = chineseTextareaRef.current;
     let selectedText = '';
     let selStart = -1;
@@ -1006,6 +1083,10 @@ export const TranslateView: React.FC = () => {
     // Tìm các token tương ứng với đoạn vừa bôi đen
     const matchedTokenIds = new Set<string>();
     let targetTok: TranslatedToken | undefined = undefined;
+    let matchedSourceStart: number | undefined;
+    let matchedSourceEnd: number | undefined;
+    const matchedSourceParts: string[] = [];
+    const matchedReaderElements: HTMLElement[] = [];
 
     if (source === 'vietphrase') {
       const selection = window.getSelection();
@@ -1013,35 +1094,72 @@ export const TranslateView: React.FC = () => {
         const range = selection.getRangeAt(0);
         // 1. Quét các phần tử span[data-token-id] giao thoa TRỰC TIẾP với vùng bôi đen (selection range)
         try {
-          const ancestor = range.commonAncestorContainer;
-          const containerEl = ancestor instanceof HTMLElement ? ancestor : ancestor.parentElement;
+          const containerEl = vietphraseScrollRef.current;
           if (containerEl) {
-            const spans = containerEl.querySelectorAll<HTMLElement>('[data-token-id]');
-            spans.forEach(span => {
-              if (selection.containsNode(span, true)) {
+            const spans = containerEl.querySelectorAll<HTMLElement>('[data-token-id], [data-source-start][data-source-end]');
+            spans.forEach((span, spanIndex) => {
+              const tokenRange = document.createRange();
+              tokenRange.selectNodeContents(span);
+              // `Range.intersectsNode()` treats a boundary-touching sibling as
+              // selected in some Chromium versions. Compare the actual text
+              // ranges so adjacent spaces/punctuation cannot leak into the
+              // synchronized highlight.
+              const intersects =
+                range.compareBoundaryPoints(Range.END_TO_START, tokenRange) < 0 &&
+                range.compareBoundaryPoints(Range.START_TO_END, tokenRange) > 0;
+              if (intersects) {
                 const tId = span.dataset.tokenId;
                 if (tId) matchedTokenIds.add(tId);
+                const sourceStart = Number(span.dataset.sourceStart);
+                const sourceEnd = Number(span.dataset.sourceEnd);
+                if (Number.isInteger(sourceStart) && Number.isInteger(sourceEnd)) {
+                  matchedSourceStart = matchedSourceStart === undefined ? sourceStart : Math.min(matchedSourceStart, sourceStart);
+                  matchedSourceEnd = matchedSourceEnd === undefined ? sourceEnd : Math.max(matchedSourceEnd, sourceEnd);
+                  matchedTokenIds.add(`quick-${spanIndex}`);
+                  if (span.dataset.sourceText) matchedSourceParts.push(span.dataset.sourceText);
+                  matchedReaderElements.push(span);
+                }
               }
             });
           }
         } catch {}
 
         // 2. Nếu selection nằm hoàn toàn bên trong 1 token duy nhất
-        if (matchedTokenIds.size === 0) {
+        if (matchedTokenIds.size === 0 && matchedSourceStart === undefined) {
           let currNode: Node | null = selection.anchorNode;
           while (currNode && currNode !== document.body) {
-            if (currNode instanceof HTMLElement && currNode.dataset && currNode.dataset.tokenId) {
-              matchedTokenIds.add(currNode.dataset.tokenId);
-              break;
+            if (currNode instanceof HTMLElement && currNode.dataset) {
+              if (currNode.dataset.tokenId) {
+                matchedTokenIds.add(currNode.dataset.tokenId);
+                break;
+              }
+              const sourceStart = Number(currNode.dataset.sourceStart);
+              const sourceEnd = Number(currNode.dataset.sourceEnd);
+              if (Number.isInteger(sourceStart) && Number.isInteger(sourceEnd)) {
+                matchedSourceStart = sourceStart;
+                matchedSourceEnd = sourceEnd;
+                if (currNode.dataset.sourceText) matchedSourceParts.push(currNode.dataset.sourceText);
+                break;
+              }
             }
             currNode = currNode.parentNode;
           }
           if (matchedTokenIds.size === 0 && selection.focusNode) {
             currNode = selection.focusNode;
             while (currNode && currNode !== document.body) {
-              if (currNode instanceof HTMLElement && currNode.dataset && currNode.dataset.tokenId) {
-                matchedTokenIds.add(currNode.dataset.tokenId);
-                break;
+              if (currNode instanceof HTMLElement && currNode.dataset) {
+                if (currNode.dataset.tokenId) {
+                  matchedTokenIds.add(currNode.dataset.tokenId);
+                  break;
+                }
+                const sourceStart = Number(currNode.dataset.sourceStart);
+                const sourceEnd = Number(currNode.dataset.sourceEnd);
+                if (Number.isInteger(sourceStart) && Number.isInteger(sourceEnd)) {
+                  matchedSourceStart = sourceStart;
+                  matchedSourceEnd = sourceEnd;
+                  if (currNode.dataset.sourceText) matchedSourceParts.push(currNode.dataset.sourceText);
+                  break;
+                }
               }
               currNode = currNode.parentNode;
             }
@@ -1074,29 +1192,42 @@ export const TranslateView: React.FC = () => {
         const firstId = Array.from(matchedTokenIds)[0];
         targetTok = translation.tokens.find(t => t.id === firstId);
 
-        // ĐỒNG BỘ 2 CHIỀU: Tự động bôi đen chính xác chữ Hán trong ô tiếng Trung!
-        const ordered = translation.tokens.filter(t => matchedTokenIds.has(t.id));
-        const starts = ordered.map(t => t.charStart).filter((n): n is number => n !== undefined);
-        const ends = ordered.map(t => t.charEnd).filter((n): n is number => n !== undefined);
-        if (starts.length > 0 && ends.length > 0 && chineseTextareaRef.current) {
-          const minS = Math.min(...starts);
-          const maxE = Math.max(...ends);
-          // Keep focus and the reading selection in Vietphrase. Focusing the
-          // textarea here scrolls its caret into view and can sync to the end.
-          const sourceTop = chineseTextareaRef.current.scrollTop;
-          chineseTextareaRef.current.setSelectionRange(minS, maxE);
-          chineseTextareaRef.current.scrollTop = sourceTop;
+        // Align a partial Vietnamese selection to the complete rendered
+        // segments, then select the exact corresponding Chinese source range.
+        if (matchedReaderElements.length > 0 && matchedSourceStart !== undefined && matchedSourceEnd !== undefined) {
+          const alignedRange = document.createRange();
+          alignedRange.setStartBefore(matchedReaderElements[0]);
+          alignedRange.setEndAfter(matchedReaderElements[matchedReaderElements.length - 1]);
+          selection?.removeAllRanges();
+          selection?.addRange(alignedRange);
+          selectedText = matchedReaderElements.map(element => element.textContent || '').join('').trim();
+          if (chineseTextareaRef.current) {
+            const sourceTop = chineseTextareaRef.current.scrollTop;
+            chineseTextareaRef.current.setSelectionRange(matchedSourceStart, matchedSourceEnd);
+            chineseTextareaRef.current.scrollTop = sourceTop;
+          }
         }
       }
     } else {
       // Người dùng bôi đen ở tiếng Trung:
       if (selStart !== -1 && selEnd !== -1) {
-        // Khớp chuẩn xác theo vị trí ký tự charStart / charEnd trong ô soạn thảo!
-        for (const tok of translation.tokens) {
-          if (tok.charStart !== undefined && tok.charEnd !== undefined) {
-            if (tok.charStart < selEnd && tok.charEnd > selStart) {
+        // The reader renders Quick Translator segments, so synchronize against
+        // those exact source ranges rather than the legacy converter tokens.
+        // Highlight intersecting translations without expanding the Chinese
+        // selection: a name can end inside a dictionary phrase (白峴南 | 面).
+        // The exact user-selected text must remain the dictionary action target.
+        const intersectingSegments = currentQuickTranslation?.segments
+          .map((segment, index) => ({ segment, index }))
+          .filter(({ segment }) => segment.sourceStart < selEnd && segment.sourceEnd > selStart) ?? [];
+
+        if (intersectingSegments.length > 0) {
+          intersectingSegments.forEach(({ index }) => matchedTokenIds.add(`quick-${index}`));
+        } else {
+          // Fallback for modes that do not render Quick Translator segments.
+          for (const tok of translation.tokens) {
+            if (tok.charStart !== undefined && tok.charEnd !== undefined && tok.charStart < selEnd && tok.charEnd > selStart) {
               matchedTokenIds.add(tok.id);
-              if (!targetTok && !tok.isPunctuation) {
+              if (!targetTok && !tok.isPunctuation && tok.charStart === selStart && tok.charEnd === selEnd) {
                 targetTok = tok;
               }
             }
@@ -1133,7 +1264,49 @@ export const TranslateView: React.FC = () => {
     let derivedHanviet = '';
     let derivedVietphrase = '';
 
-    if (orderedMatched.length > 0) {
+    // Translate the exact highlighted Chinese range with the same engine and
+    // dictionaries as the reader. A direct dictionary lookup alone only works
+    // when the whole selection is one key; otherwise it used to fall back to
+    // Han-Viet (or a meaning from just one nested token).
+    const translateSelectedChinese = (value: string) => quickTranslateOneMeaningForBatchDetailed(
+      value,
+      namesList,
+      vietphraseMap,
+      {
+        namesMainMap,
+        phienAmMap,
+        luatNhanMap,
+        pronounsMap,
+        ignoredPhrases: ignoredPhrasesList,
+        translationAlgorithm: settings.quickTranslationAlgorithm,
+        wrapType: 0,
+        prioritizedName: settings.prioritizeNames,
+        capitalizeLines: settings.capitalizeSentences,
+      },
+    ).text.trim();
+
+    if (matchedSourceStart !== undefined && matchedSourceEnd !== undefined) {
+      derivedChinese = matchedSourceParts.join('') || inputChinese.slice(matchedSourceStart, matchedSourceEnd);
+      derivedVietphrase = selectedText;
+      const lookup = inspectChinesePhrase(derivedChinese, namesList, vietphraseMap, { namesMainMap, customPhienAm: phienAmMap });
+      derivedHanviet = lookup.hanviet;
+    } else if (source === 'chinese') {
+      // The highlight may cut through a dictionary token. The popup must show
+      // exactly what the user selected instead of expanding to whole tokens.
+      derivedChinese = selectedText;
+      const lookup = inspectChinesePhrase(derivedChinese, namesList, vietphraseMap, {
+        namesMainMap,
+        customPhienAm: phienAmMap,
+      });
+      derivedVietphrase = translateSelectedChinese(derivedChinese) || lookup.existingVp || lookup.suggestedVietnamese || '';
+      derivedHanviet = lookup.hanviet
+        ? lookup.hanviet
+            .trim()
+            .split(/\s+/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            .join(' ')
+        : '';
+    } else if (orderedMatched.length > 0) {
       derivedChinese = orderedMatched.map(t => t.original).join('');
       derivedVietphrase = orderedMatched
         .map(t => (tokenOverrides[t.id] !== undefined ? tokenOverrides[t.id] : t.translated).trim())
@@ -1155,7 +1328,7 @@ export const TranslateView: React.FC = () => {
     } else {
       derivedChinese = selectedText;
       const lookup = inspectChinesePhrase(selectedText, namesList, vietphraseMap, { namesMainMap, customPhienAm: phienAmMap });
-      derivedVietphrase = lookup.existingVp || lookup.suggestedVietnamese || '';
+      derivedVietphrase = translateSelectedChinese(derivedChinese) || lookup.existingVp || lookup.suggestedVietnamese || '';
       derivedHanviet = lookup.hanviet
         ? lookup.hanviet
             .trim()
@@ -1186,6 +1359,31 @@ export const TranslateView: React.FC = () => {
       hanvietText: derivedHanviet || undefined,
       vietphraseText: derivedVietphrase || undefined,
     });
+
+    if (source === 'vietphrase' && ta) {
+      const tokenStarts = orderedMatched.map(token => token.charStart).filter((value): value is number => value !== undefined);
+      const tokenEnds = orderedMatched.map(token => token.charEnd).filter((value): value is number => value !== undefined);
+      const sourceStart = matchedSourceStart ?? (tokenStarts.length ? Math.min(...tokenStarts) : undefined);
+      const sourceEnd = matchedSourceEnd ?? (tokenEnds.length ? Math.max(...tokenEnds) : undefined);
+
+      if (sourceStart !== undefined && sourceEnd !== undefined && sourceEnd > sourceStart) {
+        // A browser only paints a textarea selection while it owns focus. The
+        // VietPhrase side remains visibly marked by syncedTokenIds, so focusing
+        // the source produces two simultaneous highlights. Preserve every
+        // scroll position because focusing a textarea can otherwise jump it.
+        const sourceScrollTop = ta.scrollTop;
+        const readerScrollTop = vietphraseScrollRef.current?.scrollTop;
+        const pageScrollX = window.scrollX;
+        const pageScrollY = window.scrollY;
+        ta.setSelectionRange(sourceStart, sourceEnd);
+        ta.focus({ preventScroll: true });
+        ta.scrollTop = sourceScrollTop;
+        if (readerScrollTop !== undefined && vietphraseScrollRef.current) {
+          vietphraseScrollRef.current.scrollTop = readerScrollTop;
+        }
+        window.scrollTo(pageScrollX, pageScrollY);
+      }
+    }
   };
 
   // Thay thế từ đang chọn bằng một nghĩa khác trong Vietphrase
@@ -1228,7 +1426,9 @@ export const TranslateView: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleGlobalClick);
   }, []);
 
-  const fontClass = settings.fontFamily === 'serif' ? 'font-serif' : 'font-reading';
+  const fontClass = 'reader-vietnamese';
+  const readerFontSize = Math.max(settings.fontSize, 18);
+  const readerLineHeight = Math.max(settings.lineHeight, 1.75);
 
   const readerThemeClasses = {
     bg: 'bg-canvas', text: 'text-main', subtext: 'text-muted',
@@ -1255,35 +1455,28 @@ export const TranslateView: React.FC = () => {
       />
 
       {/* Toast Notification Banner - Hỗ trợ chuẩn thông báo "Đã lưu" hoặc "Lỗi" màu đỏ */}
-      {toastState && (
-        <div 
-          className={`absolute top-14 left-1/2 -translate-x-1/2 z-50 text-xs py-1.5 px-4 rounded-full shadow-xl border animate-in fade-in slide-in-from-top-2 duration-150 pointer-events-none flex items-center gap-1.5 ${
-            toastState.isError
-              ? 'bg-surface/95 text-rose-500 border-rose-500/80 font-bold ring-1 ring-rose-500/50 shadow-rose-950/50'
-              : 'bg-surface/95 text-emerald-400 border-emerald-500/60 font-medium ring-1 ring-emerald-500/40 shadow-emerald-950/40'
-          }`}
-        >
-          {toastState.isError && <AlertCircle size={14} className="text-rose-500 shrink-0" />}
-          <span className={toastState.isError ? 'text-rose-500 font-bold tracking-wide' : 'text-emerald-400 font-semibold'}>
-            {toastState.message}
-          </span>
-        </div>
-      )}
-
       {/* Floating Selection Tooltip Toolbar for Highlighted Words */}
-      {selectionInfo.visible && (
+      {selectionInfo.visible && !inspectModal.isOpen && createPortal(
         <div
           id="selection-bubble-toolbar"
+          onMouseDown={event => {
+            // Keep the source selection alive until the button's click fires.
+            // Moving focus first can fire textarea onSelect and unmount this menu.
+            if ((event.target as Element).closest('button')) event.preventDefault();
+            event.stopPropagation();
+          }}
+          onMouseUp={event => event.stopPropagation()}
+          onTouchEnd={event => event.stopPropagation()}
           onClickCapture={event => {
             if ((event.target as HTMLElement).closest('button')) rememberEditViewport();
           }}
           style={{
             position: 'fixed',
-            left: `${Math.max(10, Math.min(window.innerWidth - 350, selectionInfo.x - 175))}px`,
+            left: `${Math.max(10, Math.min(window.innerWidth - 410, selectionInfo.x - 195))}px`,
             top: `${Math.max(12, Math.min(window.innerHeight - 260, selectionInfo.y - 220))}px`,
             zIndex: 60,
           }}
-          role="dialog" aria-label="Tra cứu cụm từ đã chọn" className="flex w-[340px] max-w-[calc(100vw-20px)] max-h-[calc(100dvh-24px)] overflow-y-auto flex-col gap-3 p-3 bg-surface border border-line rounded-xl text-xs text-main"
+          role="dialog" aria-label="Tra cứu cụm từ đã chọn" className="flex w-[400px] max-w-[calc(100vw-20px)] max-h-[calc(100dvh-24px)] overflow-y-auto flex-col gap-3 p-3 bg-surface border border-line rounded-xl text-xs text-main"
         >
           <div className="space-y-1.5">
             <p className="text-lg leading-relaxed font-medium break-words" lang="zh">
@@ -1308,7 +1501,22 @@ export const TranslateView: React.FC = () => {
             </div>
           )}
           {/* Hàng nút công cụ thao tác */}
-          <div className="grid grid-cols-2 gap-1.5 border-t border-line pt-3">
+          <div className="grid grid-cols-6 gap-1.5 border-t border-line pt-3 [&>button]:min-w-0 [&>button]:overflow-hidden [&>button]:px-1.5 [&>button]:gap-1 [&>button>span]:min-w-0 [&>button>span]:truncate [&>button>svg]:shrink-0">
+            <button
+              onClick={() => {
+                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                const cleanVn = selectionInfo.source === 'vietphrase' ? selectionInfo.text.replace(/\s+/g, ' ').trim() : '';
+                const targetVn = cleanVn || selectionInfo.hanvietText || selectionInfo.vietphraseText || '';
+                openInspectModal(targetCn, targetVn, 'Nhân vật', 'name_main', translationStyle);
+                setSelectionInfo(prev => ({ ...prev, visible: false }));
+              }}
+              className="studio-action col-span-2 w-full"
+              title="Thêm từ đang chọn vào Name chính"
+            >
+              <BookmarkPlus size={13} />
+              <span>Name chính</span>
+            </button>
+
             <button
               onClick={() => {
                 const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
@@ -1317,11 +1525,11 @@ export const TranslateView: React.FC = () => {
                 openInspectModal(targetCn, targetVn, 'Nhân vật', 'name', translationStyle);
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
-              className="studio-action w-full"
-              title="Thêm từ đang chọn vào Tệp Name"
+              className="studio-action col-span-2 w-full"
+              title="Thêm từ đang chọn vào Name phụ"
             >
               <BookmarkPlus size={13} />
-              <span>Thêm Name</span>
+              <span>Name phụ</span>
             </button>
 
             <button
@@ -1334,34 +1542,24 @@ export const TranslateView: React.FC = () => {
                 openInspectModal(targetCn, targetVn, 'Khác', 'vietphrase', translationStyle);
                 setSelectionInfo(prev => ({ ...prev, visible: false }));
               }}
-              className="studio-action w-full"
+              className="studio-action col-span-2 w-full"
               title="Thêm vào từ điển Vietphrase"
             >
               <BookOpen size={13} />
-              <span>Thêm VietPhrase</span>
+              <span>VietPhrase</span>
             </button>
 
             <button
-              onClick={() => {
-                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
-                addIgnoredPhrase(targetCn);
-                showToast(`Đã thêm "${targetCn}" vào Tệp Bỏ qua`);
-                setSelectionInfo(prev => ({ ...prev, visible: false }));
-              }}
-              className="studio-action w-full"
+              onClick={() => setPendingDictionaryAction('ignore')}
+              className="studio-action col-span-3 w-full"
               title="Thêm vào Tệp Bỏ qua (IgnoreChinesephrase.txt)"
             >
               <Plus size={13} /><span>Thêm bỏ qua</span>
             </button>
 
             <button
-              onClick={() => {
-                const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
-                deletePhrase(targetCn);
-                showToast(`Đã xóa cụm "${targetCn}" khỏi từ điển`);
-                setSelectionInfo(prev => ({ ...prev, visible: false }));
-              }}
-              className="studio-action w-full hover:text-rose-500"
+              onClick={() => setPendingDictionaryAction('delete')}
+              className="studio-action col-span-3 w-full hover:text-rose-500"
               title="Xóa cụm từ này khỏi Tệp Name hoặc Vietphrase"
             >
               <Trash2 size={13} />
@@ -1370,7 +1568,38 @@ export const TranslateView: React.FC = () => {
 
 
           </div>
-        </div>
+          {pendingDictionaryAction && (
+            <div className="rounded-lg border border-line bg-raised text-main p-3 space-y-2" role="alertdialog" aria-label="Xác nhận thay đổi từ điển">
+              <p className="leading-relaxed text-main">
+                {pendingDictionaryAction === 'delete'
+                  ? `Xóa "${selectionInfo.chineseOriginal || selectionInfo.text}" khỏi Name phụ và VietPhrase?`
+                  : `Thêm "${selectionInfo.chineseOriginal || selectionInfo.text}" vào danh sách Bỏ qua?`}
+              </p>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setPendingDictionaryAction(null)} className="rounded-md border border-line px-3 py-1.5 text-muted hover:bg-hover hover:text-main">Hủy</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetCn = selectionInfo.chineseOriginal || selectionInfo.text;
+                    if (pendingDictionaryAction === 'delete') {
+                      deletePhrase(targetCn);
+                      showToast(`Đã xóa cụm "${targetCn}" khỏi Name phụ và VietPhrase`);
+                    } else {
+                      addIgnoredPhrase(targetCn);
+                      showToast(`Đã thêm "${targetCn}" vào Tệp Bỏ qua`);
+                    }
+                    setPendingDictionaryAction(null);
+                    setSelectionInfo(prev => ({ ...prev, visible: false }));
+                  }}
+                  className={`rounded-md px-3 py-1.5 font-medium text-white ${pendingDictionaryAction === 'delete' ? 'bg-rose-600 hover:bg-rose-500' : 'bg-amber-600 hover:bg-amber-500'}`}
+                >
+                  {pendingDictionaryAction === 'delete' ? 'Xóa từ' : 'Thêm bỏ qua'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>,
+        document.body,
       )}
 
       {/* Top Controls Bar - Toàn bộ các nút dạng ICON siêu nhỏ gọn */}
@@ -1659,7 +1888,8 @@ export const TranslateView: React.FC = () => {
                   setActiveRawText(e.target.value);
                 }}
                 onScroll={handleChineseScroll}
-                onSelect={() => handleTextSelection('chinese')}
+                // Programmatic selection/focus sync from the reader must not
+                // reopen or move its popup. Handle completed user gestures only.
                 onMouseUp={() => handleTextSelection('chinese')}
                 onTouchEnd={() => handleTextSelection('chinese')}
                 onKeyUp={(e) => {
@@ -1668,7 +1898,7 @@ export const TranslateView: React.FC = () => {
                   }
                 }}
                 placeholder="Nhập hoặc dán văn bản tiếng Trung vào đây..."
-                className={`flex-1 w-full h-full p-3 bg-transparent ${fontClass} text-sm resize-none focus:outline-none focus:ring-0 leading-relaxed font-normal ${
+                className={`flex-1 w-full h-full p-3 bg-transparent reader-chinese text-sm resize-none focus:outline-none focus:ring-0 leading-relaxed font-normal ${
                   isLight ? 'text-main placeholder-subtle' : isSepia ? 'text-main placeholder-[#a69279]' : 'text-main placeholder-subtle'
                 }`}
               />
@@ -1777,7 +2007,7 @@ export const TranslateView: React.FC = () => {
               </div>
             ) : viewMode === 'ai' ? (
               activeAiTranslation ? (
-                <div className={`${fontClass} space-y-4 select-text`} style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}>
+                <div className={`${fontClass} space-y-4 select-text`} style={{ fontSize: `${readerFontSize}px`, lineHeight: readerLineHeight }}>
                   {aiParagraphs.map((paragraph, index) => (
                     <p
                       key={index}
@@ -1785,7 +2015,7 @@ export const TranslateView: React.FC = () => {
                       className={readerThemeClasses.pText}
                       style={settings.customTextColor ? { color: settings.customTextColor } : undefined}
                     >
-                      {paragraph}
+                      {normalizeReaderTypography(paragraph)}
                     </p>
                   ))}
                 </div>
@@ -1800,6 +2030,23 @@ export const TranslateView: React.FC = () => {
                   )}
                 </div>
               )
+            ) : currentQuickTranslation && (viewMode === 'vietphrase' || viewMode === 'hanviet') ? (
+              <div className={`${fontClass} select-text whitespace-pre-wrap`} style={{ fontSize: `${readerFontSize}px`, lineHeight: readerLineHeight, color: settings.customTextColor || undefined }}>
+                {viewMode === 'vietphrase'
+                  ? currentQuickTranslation.segments.map((segment, index) => <span
+                      key={`${segment.sourceStart}-${segment.sourceEnd}-${index}`}
+                      data-source-start={segment.sourceStart}
+                      data-source-end={segment.sourceEnd}
+                      data-source-text={currentQuickTranslation.source.slice(segment.sourceStart, segment.sourceEnd)}
+                      className={syncedTokenIds.has(`quick-${index}`) ? 'sync-highlight font-semibold ring-1 ring-accent/80 rounded-xs' : undefined}
+                    >{normalizeReaderSegment(segment.text, index > 0 ? currentQuickTranslation.segments[index - 1].text : '')}</span>)
+                  : translation.paragraphs.map((paragraph, paragraphIndex) => <p key={paragraphIndex} id={`p-reader-${paragraphIndex}`} className="mb-4 last:mb-0">
+                      {paragraph.tokens.map((tok, tokIdx) => <React.Fragment key={tok.id}>
+                        {separatorBeforeHanvietToken(paragraph.tokens, tokIdx)}
+                        {renderHanvietReadingToken(tok, syncedTokenIds.has(tok.id), settings.customTextColor)}
+                      </React.Fragment>)}
+                    </p>)}
+              </div>
             ) : viewMode === 'parallel' ? (
               // Song song view: Two-column / aligned paragraphs
               <div className="space-y-6">
@@ -1821,7 +2068,7 @@ export const TranslateView: React.FC = () => {
                             : 'bg-surface/50 border-line/60'
                     }`}
                   >
-                    <div className={`${fontClass} text-sm text-muted leading-relaxed border-b md:border-b-0 md:border-r border-line pb-2 md:pb-0 md:pr-3`}>
+                    <div className={`reader-chinese text-sm text-muted leading-relaxed border-b md:border-b-0 md:border-r border-line pb-2 md:pb-0 md:pr-3`}>
                       {p.tokens.map(tok => {
                         const isSynced = syncedTokenIds.has(tok.id);
                         return (
@@ -1829,7 +2076,7 @@ export const TranslateView: React.FC = () => {
                             key={tok.id}
                             onClick={() => handleChineseTokenClick(tok)}
                             className={`cursor-pointer px-0.5 rounded-xs ${
-                              isSynced ? 'bg-accent/40 text-accent ring-1 ring-accent' : ''
+                              isSynced ? 'sync-highlight ring-1 ring-accent' : ''
                             }`}
                           >
                             {tok.original}
@@ -1840,8 +2087,8 @@ export const TranslateView: React.FC = () => {
                     <div 
                       className={`${fontClass} leading-relaxed`}
                       style={{ 
-                        fontSize: `${settings.fontSize}px`, 
-                        lineHeight: settings.lineHeight,
+                        fontSize: `${readerFontSize}px`,
+                        lineHeight: readerLineHeight,
                         color: settings.customTextColor || undefined
                       }}
                     >
@@ -1862,8 +2109,8 @@ export const TranslateView: React.FC = () => {
             ) : viewMode === 'chinese' ? (
               // Chinese view: with interactive token inspection
               <div 
-                className={`${fontClass} leading-loose space-y-4`}
-                style={{ fontSize: `${settings.fontSize + 2}px` }}
+                className={`reader-chinese leading-loose space-y-4`}
+                style={{ fontSize: `${Math.max(settings.fontSize + 2, 18)}px`, lineHeight: readerLineHeight }}
               >
                 {detectedHeading && (
                   <h2 className="text-lg font-bold text-accent mb-2 border-b border-line pb-2">
@@ -1893,7 +2140,7 @@ export const TranslateView: React.FC = () => {
                             onClick={() => handleChineseTokenClick(tok)}
                             className={`cursor-pointer px-0.5 rounded-xs transition-colors ${
                               isSynced 
-                                ? 'bg-accent/40 text-accent ring-1 ring-accent' 
+                                ? 'sync-highlight ring-1 ring-accent'
                                 : tok.isName 
                                   ? 'text-accent font-medium hover:bg-raised' 
                                   : 'hover:bg-raised text-main'
@@ -1912,7 +2159,7 @@ export const TranslateView: React.FC = () => {
               // Vietphrase or Hanviet view
               <div 
                 className={`${fontClass} space-y-4 select-text`}
-                style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}
+                style={{ fontSize: `${readerFontSize}px`, lineHeight: readerLineHeight }}
               >
                 {/* Tiêu đề chương đã tự động convert sang tiếng Việt */}
                 {detectedHeading && (
@@ -1945,7 +2192,12 @@ export const TranslateView: React.FC = () => {
                       style={settings.customTextColor ? { color: settings.customTextColor } : undefined}
                     >
                       {viewMode === 'hanviet'
-                        ? p.hanviet
+                        ? p.tokens.map((tok, tokIdx) => (
+                            <React.Fragment key={tok.id}>
+                              {separatorBeforeHanvietToken(p.tokens, tokIdx)}
+                              {renderHanvietReadingToken(tok, syncedTokenIds.has(tok.id), settings.customTextColor)}
+                            </React.Fragment>
+                          ))
                         // Ở phần Vietphrase: Không có sự kiện click mở popup
                         : p.tokens.map((tok, tokIdx) => {
                             const isPunc = tok.isPunctuation || [',', '.', '!', '?', ';', ':', ')', ']', '}', '”', '"', "'"].includes(tok.translated);
@@ -2216,7 +2468,7 @@ function renderPureReadingToken(
   overrideText?: string,
   customTextColor?: string
 ) {
-  const displayText = (overrideText !== undefined ? overrideText : tok.translated).trim();
+  const displayText = normalizeReaderTypography((overrideText !== undefined ? overrideText : tok.translated).trim());
 
   if (displayText === '') {
     return null;
@@ -2234,7 +2486,7 @@ function renderPureReadingToken(
       <span
         key={tok.id}
         data-token-id={tok.id}
-        className="bg-accent/35 text-accent font-semibold ring-1 ring-accent/80 rounded-xs px-0.5 mx-0.5 transition-colors"
+        className="sync-highlight font-semibold ring-1 ring-accent/80 rounded-xs px-0.5 mx-0.5 transition-colors"
       >
         {displayText}
       </span>

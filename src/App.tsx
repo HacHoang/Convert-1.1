@@ -5,7 +5,7 @@
  * Toàn bộ điều hướng nằm gọn trong nút Menu 3 gạch (Side Drawer) ở thanh trên
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useResolvedTheme } from './utils/theme';
 import { AppProvider, useApp } from './context/AppContext';
 import { AndroidHeader } from './components/AndroidHeader';
@@ -20,6 +20,8 @@ const WebImportView = React.lazy(() => import('./components/views/WebImportView'
 
 const MainLayout: React.FC = () => {
   const { activeTab, settings } = useApp();
+  const mountedTabs = useRef(new Set([activeTab]));
+  mountedTabs.current.add(activeTab);
   const theme = useResolvedTheme(settings.theme);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -29,7 +31,7 @@ const MainLayout: React.FC = () => {
   const isMobileFrame = settings.displayMode === 'mobile_frame';
 
   return (
-    <div data-theme={theme} className="studio-ui min-h-screen w-full flex items-center justify-center bg-canvas text-main selection:bg-accent-soft transition-colors duration-200 font-sans antialiased">
+    <div data-theme={theme} className="studio-ui min-h-screen w-full flex items-center justify-center bg-canvas text-main selection:bg-accent-soft transition-colors duration-200 font-ui antialiased">
       {/* Container: either mobile frame or full responsive */}
       <div 
         id="app-frame"
@@ -45,18 +47,16 @@ const MainLayout: React.FC = () => {
 
           {/* Tab View Container - Tràn toàn bộ chiều cao màn hình */}
           <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
-            {activeTab === 'translate' && <TranslateView />}
-            {activeTab === 'batch' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><BatchTranslateView /></React.Suspense>}
-            {activeTab === 'web' && <React.Suspense fallback={<div className="p-4 text-sm text-muted">Đang mở Truyện từ web…</div>}><WebImportView /></React.Suspense>}
-            {activeTab === 'library' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><LibraryView /></React.Suspense>}
-            {activeTab === 'dictionary' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><DictionaryView /></React.Suspense>}
-            {activeTab === 'settings' && <React.Suspense fallback={<div className="p-4">Đang mở…</div>}><SettingsView /></React.Suspense>}
+            {mountedTabs.current.has('translate') && <div className={activeTab === 'translate' ? 'flex min-h-0 flex-1' : 'hidden'}><TranslateView /></div>}
+            {mountedTabs.current.has('batch') && <div className={activeTab === 'batch' ? 'flex min-h-0 flex-1' : 'hidden'}><React.Suspense fallback={<div className="p-4">Đang mở…</div>}><BatchTranslateView /></React.Suspense></div>}
+            {mountedTabs.current.has('web') && <div className={activeTab === 'web' ? 'flex min-h-0 flex-1' : 'hidden'}><React.Suspense fallback={<div className="p-4 text-sm text-muted">Đang mở Truyện từ web…</div>}><WebImportView /></React.Suspense></div>}
+            {mountedTabs.current.has('library') && <div className={activeTab === 'library' ? 'flex min-h-0 flex-1' : 'hidden'}><React.Suspense fallback={<div className="p-4">Đang mở…</div>}><LibraryView /></React.Suspense></div>}
+            {mountedTabs.current.has('dictionary') && <div className={activeTab === 'dictionary' ? 'flex min-h-0 flex-1' : 'hidden'}><React.Suspense fallback={<div className="p-4">Đang mở…</div>}><DictionaryView /></React.Suspense></div>}
+            {mountedTabs.current.has('settings') && <div className={activeTab === 'settings' ? 'flex min-h-0 flex-1' : 'hidden'}><React.Suspense fallback={<div className="p-4">Đang mở…</div>}><SettingsView /></React.Suspense></div>}
           </main>
+          <WordInspectModal />
         </BackgroundTasks>
       </div>
-
-      {/* Word / Name Inspection & Editor Modal */}
-      <WordInspectModal />
     </div>
   );
 };

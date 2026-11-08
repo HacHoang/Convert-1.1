@@ -44,6 +44,6 @@ export function GoogleSignInButton({ onCredential }: { onCredential: (credential
     {status !== 'ready' && <button type="button" disabled={status === 'loading' || status === 'verifying' || status === 'unavailable'} onClick={() => status === 'unconfigured' ? setError('Đăng nhập Google chưa được cấu hình.') : setAttempt(n => n + 1)} className="w-full min-h-10 rounded-lg border border-line bg-raised/40 px-3 py-2 text-xs text-main">
       {status === 'loading' ? 'Đang tải đăng nhập…' : status === 'verifying' ? 'Đang xác minh…' : status === 'unavailable' ? 'Cần máy chủ API' : status === 'error' ? 'Thử đăng nhập lại' : 'Đăng nhập với Google'}
     </button>}
-    {error && <p role="alert" className="text-[11px] leading-relaxed text-rose-300">{error}</p>}
+    <p role="alert" className="min-h-4 truncate text-[11px] leading-4 text-rose-300" title={error || undefined}>{error}</p>
   </div>;
 }

@@ -48,10 +48,12 @@ export function createLibraryChapterMatcher(existing: SavedChapter[]) {
     const byUrl = lookup('url', incoming.sourceUrl?.split('#')[0] || '').find(compatible);
     if (byUrl) return byUrl.row;
     const matches = (key ? lookup('key', key) : lookup('title', normalizedTitle(incoming.title))).filter(record => record.part === incomingPart);
-    // Existing libraries may already contain revisions of the same chapter.
-    // Resolve by title too instead of treating ambiguous number matches as new chapters.
+    // A source URL identifies a fetch, not a library chapter. When a crawler
+    // gives duplicate URLs/items for the same named chapter, keep one record.
     const sameTitle = matches.find(record => record.title === normalizedTitle(incoming.title));
     if (sameTitle) return sameTitle.row;
+    // Different titles sharing a chapter number remain separate source items.
+    if (incoming.sourceUrl) return undefined;
     return matches.length === 1 ? matches[0].row : undefined;
   };
   return { find, update };

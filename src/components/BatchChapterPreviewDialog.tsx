@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import type { BatchTranslationItem } from '../utils/chapterSplitter';
+import { normalizeVietnameseTypography } from '../utils/vietnameseTypography';
 
 export function BatchChapterPreviewDialog({ chapter, filename, onClose }: {
   chapter: BatchTranslationItem; filename?: string; onClose: () => void;
@@ -34,8 +35,8 @@ export function BatchChapterPreviewDialog({ chapter, filename, onClose }: {
         <button autoFocus aria-label="Đóng xem trước" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-main"><X size={18} /></button>
       </header>
       <div className="chapter-preview-panes min-h-0 flex-1 gap-2 p-2">
-        <section aria-label="Nội dung gốc" tabIndex={0} className="min-h-0 min-w-0 overflow-auto overscroll-contain rounded-lg border border-line bg-canvas p-3 font-serif text-sm leading-relaxed whitespace-pre-wrap break-words">{chapter.content}</section>
-        <section aria-label="Nội dung đã dịch" tabIndex={0} className="min-h-0 min-w-0 overflow-auto overscroll-contain rounded-lg border border-line bg-canvas p-3 text-sm leading-relaxed whitespace-pre-wrap break-words">{chapter.translatedContent || <span className="italic text-muted">Chương này chưa được dịch.</span>}</section>
+        <section aria-label="Nội dung gốc" tabIndex={0} className="min-h-0 min-w-0 overflow-auto overscroll-contain rounded-lg border border-line bg-canvas p-3 font-reading text-sm leading-relaxed whitespace-pre-wrap break-words">{chapter.content}</section>
+        <section aria-label="Nội dung đã dịch" tabIndex={0} className="min-h-0 min-w-0 overflow-auto overscroll-contain rounded-lg border border-line bg-canvas p-3 text-sm leading-relaxed whitespace-pre-wrap break-words">{chapter.translatedContent ? normalizeVietnameseTypography(chapter.translatedContent, true) : <span className="italic text-muted">Chương này chưa được dịch.</span>}</section>
       </div>
       <footer className="flex shrink-0 justify-end border-t border-line px-3 py-2">
         <button onClick={onClose} className="min-h-9 rounded-lg bg-raised px-4 text-xs font-medium hover:bg-hover">Đóng</button>

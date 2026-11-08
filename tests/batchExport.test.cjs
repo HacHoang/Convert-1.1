@@ -52,6 +52,28 @@ test('folder picker runs immediately and all TXT/DOCX files are closed before su
   } finally { globalThis.window = previousWindow; }
 });
 
+test('desktop bridge writes completed files in the selected format without browser temporary handles', async () => {
+  const previousWindow = globalThis.window;
+  const files = new Map(); let finished = 0;
+  globalThis.window = { hermesFileSystem: {
+    chooseDirectory: async () => ({ name: 'Books' }),
+    writeFile: async (name, bytes) => { files.set(name, Buffer.from(bytes)); return { size: bytes.byteLength }; },
+    finish: async () => { finished++; },
+  } };
+  const chapters = [{ id: 'chapter-1', chapterNum: 1, rawTitle: 'Chương 1', translatedTitle: 'Chương 1', translatedContent: 'Nội dung' }];
+  try {
+    for (const format of ['txt', 'docx', 'epub']) {
+      const result = await loaded.exports.saveChaptersToUserFolder(chapters, format);
+      assert.equal(result.folderName, 'Books');
+      assert.ok(files.get(`1.${format}`).length > 0);
+    }
+    assert.match(files.get('1.txt').toString('utf8'), /Nội dung/);
+    assert.equal(files.get('1.docx').subarray(0, 2).toString(), 'PK');
+    assert.equal(files.get('1.epub').subarray(0, 2).toString(), 'PK');
+    assert.equal(finished, 3);
+  } finally { globalThis.window = previousWindow; }
+});
+
 test('cancelled folder picker writes nothing and write failure cannot report success', async () => {
   const previousWindow = globalThis.window;
   try {

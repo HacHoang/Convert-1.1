@@ -12,6 +12,8 @@ test('preserves both parts and single-part imports with explicit part numbers', 
   const parts = [chapter('a', 45, 'Title (1/2)'), chapter('b', 45, 'Title (2/2)'), chapter('c', 46)];
   assert.deepEqual([...chapterFileNames(parts, 'txt').values()], ['45-1.txt', '45-2.txt', '46.txt']);
   assert.deepEqual([...chapterFileNames([parts[1]], 'docx').values()], ['45-2.docx']);
+  assert.deepEqual([...chapterFileNames([parts[1]], 'epub').values()], ['45-2.epub']);
+  assert.deepEqual([...chapterFileNames([parts[1]], 'pdf').values()], ['45-2.pdf']);
 });
 
 test('all output names remain unique with unlabelled duplicates and repeated part labels', () => {

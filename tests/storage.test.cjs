@@ -31,6 +31,53 @@ test('invalid text encoding is rejected instead of silently inserting replacemen
 });
 const { readConvertPreference } = load('legacyCompatibility.ts');
 const { mergeDictionaryRows } = load('indexedDbStorage.ts');
+
+test('dictionary edits notify other windows only after a successful commit', async () => {
+  const storage = load('indexedDbStorage.ts');
+  const originals = ['indexedDB', 'BroadcastChannel'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
+  const events = [];
+  let fail = false;
+  Object.defineProperty(globalThis, 'BroadcastChannel', { configurable: true, value: class {
+    postMessage(stores) { events.push(stores); }
+    close() {}
+  } });
+  Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: {
+    open() {
+      const request = { result: {
+        close() {},
+        transaction() {
+          const tx = {
+            error: new Error('quota'),
+            objectStore() { return {
+              put() {}, delete() {},
+              get() { const req = { result: [] }; queueMicrotask(() => req.onsuccess?.()); return req; },
+            }; },
+          };
+          queueMicrotask(() => queueMicrotask(() => fail ? tx.onabort() : tx.oncomplete()));
+          return tx;
+        },
+      } };
+      queueMicrotask(() => request.onsuccess());
+      return request;
+    },
+  } });
+  try {
+    await storage.saveVietphraseItem('中', 'trung');
+    await storage.deleteVietphraseItem('中');
+    assert.deepEqual(events, [[storage.STORE_VIETPHRASE], [storage.STORE_VIETPHRASE]]);
+    fail = true;
+    await assert.rejects(storage.saveVietphraseItem('中', 'trung'), /quota/);
+    await assert.rejects(storage.deleteVietphraseItem('中'), /quota/);
+    assert.equal(events.length, 2);
+    await storage.saveVietphraseBatch([]);
+    assert.equal(events.length, 2);
+  } finally {
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  }
+});
 const legacy = { app: 'TTV Translate', version: '2.6-offline', namesList: [], vietphraseMap: {}, savedChapters: [] };
 
 test('backup preserves reading progress, bookmarks and preferences and rejects invalid anchors', () => {

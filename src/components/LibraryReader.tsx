@@ -1,14 +1,15 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Bookmark, BookmarkCheck, ChevronLeft, ChevronRight, List, Settings2, X, Trash2, Maximize, Minimize, Square } from 'lucide-react';
 import { useApp, type NovelBook, type SavedChapter } from '../context/AppContext';
-import { convertText } from '../utils/translatorEngine';
-import { resolveTranslationStyle } from '../utils/translationStyle';
 import { speechService } from '../utils/speechEngine';
 import { filterWebsiteNotices } from '../utils/paragraphFilters';
 import { SpeechTransport } from './SpeechTransport';
 import { VoiceSetupDialog } from './VoiceSetupDialog';
 import { ReaderEndGate } from '../utils/readerState';
 import { useReadingActivity } from '../hooks/useReadingActivity';
+import { useBackgroundTasks } from '../context/BackgroundTasks';
+import { quickTranslateOneMeaningForBatch } from '../utils/quickTranslatorPort';
+import { capitalizeLineStarts } from '../utils/vietnameseTypography';
 import { DEFAULT_READER_PREFERENCES, orderReaderChapters, readerChapterBlocks, readReaderState, saveReadingPosition,
   stageReadingPosition, updateReaderState, shouldAdvanceReader, type ReaderPreferences, type ReaderState, type ReadingPosition } from '../utils/readerState';
 
@@ -16,11 +17,11 @@ export function LibraryReader({ book, chapters: unsorted, initialChapterId, onCl
   book: NovelBook; chapters: SavedChapter[]; initialChapterId?: string; onClose: () => void; onEdit: (chapter: SavedChapter) => void;
 }) {
   const { namesList, namesMainMap, phienAmMap, dictionaryStyleRevision, vietphraseMap, luatNhanMap, pronounsMap, ignoredPhrasesList, settings, readingStats, recordReadingActivity } = useApp();
+  const background = useBackgroundTasks();
   const chapters = useMemo(() => orderReaderChapters(unsorted), [unsorted]);
   const [chapterId, setChapterId] = useState('');
   const [state, setState] = useState<ReaderState>({ progress: {}, bookmarks: [], preferences: { ...DEFAULT_READER_PREFERENCES } });
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState('');
   const [drawer, setDrawer] = useState<'chapters' | 'bookmarks' | 'settings' | null>(null);
   const [search, setSearch] = useState('');
   const [block, setBlock] = useState(0);
@@ -41,7 +42,7 @@ export function LibraryReader({ book, chapters: unsorted, initialChapterId, onCl
   const entered = useRef(0), autoTimer = useRef<ReturnType<typeof setTimeout> | null>(null), saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null), frame = useRef(0);
   const index = chapters.findIndex(chapter => chapter.id === chapterId), chapter = chapters[index];
   const prefs = state.preferences;
-  const report = (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason));
+  const report = (reason: unknown) => background.notify(reason instanceof Error ? reason.message : String(reason), true);
   const flush = () => position.current ? saveReadingPosition(book.id, position.current).catch(report) : Promise.resolve();
   const cancelAuto = () => { if (autoTimer.current) clearTimeout(autoTimer.current); autoTimer.current = null; setAutoPending(false); };
   const capture = () => {
@@ -69,11 +70,12 @@ export function LibraryReader({ book, chapters: unsorted, initialChapterId, onCl
   const text = useMemo(() => {
     if (!chapter) return '';
     if (prefs.mode === 'original') return chapter.originalText;
-    if (chapter.vietphraseText.trim()) return filterWebsiteNotices(chapter.vietphraseText);
-    return convertText(chapter.originalText, namesList, vietphraseMap, { prioritizeNames: settings.prioritizeNames,
-      capitalizeSentences: settings.capitalizeSentences, namesMainMap, customPhienAm: phienAmMap, customLuatNhan: luatNhanMap, customPronouns: pronounsMap,
-      customIgnored: ignoredPhrasesList, style: resolveTranslationStyle(book.genres?.length ? book.genres : [book.genre || ''], book.translationStyle || 'auto') }).fullText;
-  }, [chapter, prefs.mode, dictionaryStyleRevision, namesMainMap, phienAmMap, namesList, vietphraseMap, settings.prioritizeNames, settings.capitalizeSentences, luatNhanMap, pronounsMap, ignoredPhrasesList, book]);
+    if (chapter.vietphraseText.trim()) return capitalizeLineStarts(filterWebsiteNotices(chapter.vietphraseText));
+    return quickTranslateOneMeaningForBatch(chapter.originalText, namesList, vietphraseMap, {
+      namesMainMap, phienAmMap, luatNhanMap, pronounsMap, ignoredPhrases: ignoredPhrasesList, translationAlgorithm: settings.quickTranslationAlgorithm,
+      wrapType: settings.quickVietphraseWrapType, prioritizedName: settings.prioritizeNames, capitalizeLines: settings.capitalizeSentences,
+    });
+  }, [chapter, prefs.mode, dictionaryStyleRevision, namesMainMap, phienAmMap, namesList, vietphraseMap, settings.quickTranslationAlgorithm, settings.quickVietphraseWrapType, settings.prioritizeNames, settings.capitalizeSentences, luatNhanMap, pronounsMap, ignoredPhrasesList]);
   const paragraphs = useMemo(() => text.split(/\n+/).map(line => line.trim()).filter(Boolean), [text]);
   useReadingActivity({ bookId: book.id, chapterId, epoch: readingStats.epoch, enabled: ready && !!text.trim() && !drawer && !showVoiceSetup,
     record: recordReadingActivity, atEnd: () => {
@@ -208,16 +210,14 @@ export function LibraryReader({ book, chapters: unsorted, initialChapterId, onCl
         <button className="hidden p-2 sm:block" aria-label={fullscreen ? 'Thoát toàn màn hình' : 'Toàn màn hình'} onClick={() => { if (document.fullscreenElement) void document.exitFullscreen().catch(report); else void root.current?.requestFullscreen().catch(report); }}>{fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}</button>
       </div>
     </header>
-    {error && <p role="alert" className="shrink-0 bg-rose-950 px-4 py-2 text-sm text-rose-200">{error}<button className="ml-3 underline" onClick={() => setError('')}>Đóng</button></p>}
     {!ready ? <p role="status" className="p-6">Đang mở vị trí đọc…</p> : !chapter ? <p className="p-6">Truyện chưa có chương để đọc.</p> : <>
       <div ref={viewport} tabIndex={0} aria-label="Nội dung chương" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 outline-none sm:px-10" onScroll={scroll}
         onWheel={event => { if (event.deltaY > 0) { intent.current = true; shortPull.current += event.deltaY; maybeAuto(shortPull.current > 70, true); } else { intent.current = false; shortPull.current = 0; cancelAuto(); endGate.current.reset(); } }}
         onTouchStart={event => { touchY.current = event.touches[0].clientY; const el = event.currentTarget; touchAtEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8; }} onTouchMove={event => { intent.current = touchY.current - event.touches[0].clientY > 20; if (!intent.current) { cancelAuto(); endGate.current.reset(); } }} onTouchEnd={event => { if (touchY.current - event.changedTouches[0].clientY > 60) maybeAuto(true, touchAtEnd.current); }}
         onKeyDown={event => { if (['PageDown', ' ', 'End'].includes(event.key)) { intent.current = true; maybeAuto(true, !event.repeat); } else if (['PageUp', 'Home'].includes(event.key)) { intent.current = false; cancelAuto(); endGate.current.reset(); } }}>
-        <article className="mx-auto pb-8 pt-8 sm:pt-12" style={{ maxWidth: prefs.width, fontSize: prefs.fontSize, lineHeight: prefs.lineHeight, fontFamily: prefs.fontFamily === 'serif' ? '"Noto Serif", Georgia, serif' : '"Be Vietnam Pro", sans-serif', overflowWrap: 'anywhere' }}>
-          <p className="mb-2 text-xs text-muted">Chương {index + 1}/{chapters.length} · khoảng {Math.max(1, Math.ceil(text.split(/\s+/).length / 230))} phút đọc</p>
+        <article className="mx-auto pb-8 pt-8 sm:pt-12" style={{ maxWidth: prefs.width, fontSize: prefs.fontSize, lineHeight: prefs.lineHeight, fontFamily: 'var(--font-reading)', overflowWrap: 'anywhere' }}>
+          <p className="mb-2 text-xs text-muted">Chương {index + 1}/{chapters.length} · khoảng {Math.max(1, Math.ceil(text.split(/\s+/).length / 230))} phút đọc{prefs.mode === 'translation' && !chapter.vietphraseText.trim() ? ' · Bản dịch tạm' : ''}</p>
           <h1 className="mb-8 text-[1.35em] font-semibold leading-relaxed">{chapter.title}</h1>
-          {prefs.mode === 'translation' && !chapter.vietphraseText.trim() && <p className="mb-6 text-xs text-muted">Bản dịch tạm từ nguyên văn. Có thể mở chỉnh sửa nếu cần.</p>}
           {paragraphs.map((paragraph, i) => <p key={`${chapter.id}-${i}`} data-reader-paragraph={i} className="mb-[1em] whitespace-pre-wrap">{paragraph}</p>)}
           {!paragraphs.length && <p>Chương chưa có nội dung.</p>}
           <div className="mt-12 border-t border-line pt-6 text-center text-sm"><p className="mb-4 text-muted">{index === chapters.length - 1 ? 'Bạn đã đọc đến chương cuối đã lưu.' : 'Hết chương. Chờ 2,5 giây, rồi kéo thêm một nhịp để sang chương sau.'}</p><div className="flex justify-center gap-3"><button className="studio-action" disabled={index <= 0} onClick={() => go(index - 1)}><ChevronLeft size={16} />Chương trước</button><button className="studio-action" disabled={index >= chapters.length - 1} onClick={() => go(index + 1)}>Chương sau<ChevronRight size={16} /></button></div></div>
@@ -245,7 +245,6 @@ export function LibraryReader({ book, chapters: unsorted, initialChapterId, onCl
         <label className="block">Giãn dòng: {prefs.lineHeight}<input aria-label="Giãn dòng đọc truyện" type="range" min={1.3} max={2.6} step={0.1} value={prefs.lineHeight} onChange={event => void changePrefs({ lineHeight: Number(event.target.value) })} className="mt-2 block w-full" /></label>
         <label className="block">Độ rộng trang<input aria-label="Độ rộng trang đọc" type="range" min={480} max={1000} step={40} value={prefs.width} onChange={event => void changePrefs({ width: Number(event.target.value) })} className="mt-2 block w-full" /></label>
         <label className="block">Giao diện đọc<select aria-label="Giao diện đọc" value={prefs.theme} onChange={event => void changePrefs({ theme: event.target.value as ReaderPreferences['theme'] })} className="ml-3 rounded border border-line bg-transparent p-2"><option value="sepia">Giấy ngả vàng</option><option value="light">Sáng</option><option value="dark">Tối</option></select></label>
-        <label className="block">Phông chữ<select aria-label="Phông chữ đọc" value={prefs.fontFamily} onChange={event => void changePrefs({ fontFamily: event.target.value as ReaderPreferences['fontFamily'] })} className="ml-3 rounded border border-line bg-transparent p-2"><option value="serif">Có chân</option><option value="sans">Không chân</option></select></label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={prefs.autoNext} onChange={event => void changePrefs({ autoNext: event.target.checked })} />Tự sang chương khi kéo hết trang</label>
         <label className="block">Nội dung<select aria-label="Ngôn ngữ đọc" value={prefs.mode} onChange={event => void changePrefs({ mode: event.target.value as ReaderPreferences['mode'] })} className="ml-3 rounded border border-line bg-transparent p-2"><option value="translation">Bản dịch tiếng Việt</option><option value="original">Nguyên văn</option></select></label>
         <p className="text-xs text-muted">Vị trí và đánh dấu được lưu tự động trên trình duyệt này. ←/→: chuyển chương. ↑/↓: cuộn nội dung đọc.</p>

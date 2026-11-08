@@ -8,14 +8,14 @@ export interface ReadingPosition {
 export interface ReaderBookmark extends ReadingPosition { id: string; novelId: string; label: string }
 export interface ReaderPreferences {
   fontSize: number; lineHeight: number; width: number; theme: 'light' | 'dark' | 'sepia';
-  fontFamily: 'serif' | 'sans'; autoNext: boolean; mode: 'translation' | 'original';
+  fontFamily: 'sans'; autoNext: boolean; mode: 'translation' | 'original';
 }
 export interface ReaderState {
   progress: Record<string, ReadingPosition>; bookmarks: ReaderBookmark[]; preferences: ReaderPreferences;
 }
 export const READER_KEY = 'readerState';
 const PENDING_KEY = 'convert_reader_pending_progress';
-export const DEFAULT_READER_PREFERENCES: ReaderPreferences = { fontSize: 20, lineHeight: 1.9, width: 760, theme: 'sepia', fontFamily: 'serif', autoNext: true, mode: 'translation' };
+export const DEFAULT_READER_PREFERENCES: ReaderPreferences = { fontSize: 20, lineHeight: 1.9, width: 760, theme: 'sepia', fontFamily: 'sans', autoNext: true, mode: 'translation' };
 const empty = (): ReaderState => ({ progress: {}, bookmarks: [], preferences: { ...DEFAULT_READER_PREFERENCES } });
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
 const fraction = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
@@ -29,7 +29,7 @@ export function validReaderState(value: unknown): value is ReaderState {
   const p = value.preferences;
   return typeof p.fontSize === 'number' && p.fontSize >= 14 && p.fontSize <= 36 && typeof p.lineHeight === 'number' && p.lineHeight >= 1.3 && p.lineHeight <= 2.6 &&
     typeof p.width === 'number' && p.width >= 480 && p.width <= 1000 && ['light', 'dark', 'sepia'].includes(p.theme) &&
-    ['serif', 'sans'].includes(p.fontFamily) && ['translation', 'original'].includes(p.mode) && typeof p.autoNext === 'boolean';
+    (p.fontFamily === 'sans' || p.fontFamily === 'serif') && ['translation', 'original'].includes(p.mode) && typeof p.autoNext === 'boolean';
 }
 function pending(): Record<string, ReadingPosition> {
   try { const value = JSON.parse(localStorage.getItem(PENDING_KEY) || '{}'); return record(value) ? Object.fromEntries(Object.entries(value).filter(([, position]) => validReadingPosition(position))) : {}; }

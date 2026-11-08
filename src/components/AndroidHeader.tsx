@@ -1,6 +1,6 @@
 import { ReadingStatsMetrics } from './ReadingStatsMetrics';
 import { ChevronDown } from 'lucide-react';
-import { BackgroundTaskIndicator } from '../context/BackgroundTasks';
+import { BackgroundTaskIndicator, useBackgroundTasks } from '../context/BackgroundTasks';
 /**
  * Android Top App Bar & Status Bar + Google AI Studio Pattern Navigation Drawer
  * - Nút Menu 3 gạch mở ngăn kéo điều hướng chuẩn mẫu Google AI Studio
@@ -44,6 +44,7 @@ import {
   LogOut,
   User,
   CheckCircle2,
+  AlertCircle,
   Sliders,
   HelpCircle,
   Database
@@ -90,7 +91,6 @@ export const AndroidHeader: React.FC = () => {
   const [guideSection, setGuideSection] = useState<'guide' | 'shortcuts'>('guide');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [brandWidth, setBrandWidth] = useState<number | null>(null);
   const brandRef = useRef<HTMLDivElement>(null);
   const quickNavRef = useRef<HTMLDivElement>(null);
@@ -103,13 +103,8 @@ export const AndroidHeader: React.FC = () => {
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
 
-  // Hiển thị toast thông báo ngắn gọn
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(prev => prev === msg ? null : prev);
-    }, 2800);
-  };
+  const background = useBackgroundTasks();
+  const showToast = (msg: string, error = false) => background.notify(msg, error);
 
 
   // Đóng popups khi click ra ngoài hoặc bấm Escape
@@ -239,7 +234,7 @@ export const AndroidHeader: React.FC = () => {
       await logoutGoogle();
       setIsAccountMenuOpen(false);
       showToast('Đã đăng xuất.');
-    } catch (error) { showToast(error instanceof Error ? error.message : 'Không đăng xuất được.'); }
+    } catch (error) { showToast(error instanceof Error ? error.message : 'Không đăng xuất được.', true); }
   };
 
   const themes = [
@@ -264,15 +259,6 @@ export const AndroidHeader: React.FC = () => {
 
   return (
     <header className="shrink-0 bg-surface border-b border-line text-main select-none relative z-40">
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-surface/95 text-main text-xs px-4 py-2.5 rounded-full border border-accent/60 shadow-2xl backdrop-blur-md flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200 pointer-events-none">
-          <CheckCircle2 size={15} className="text-accent shrink-0" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
-
-
       {/* Main App Bar */}
       <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2">
         {/* Bên Trái: Nút Menu 3 gạch và tên ứng dụng */}
@@ -290,11 +276,10 @@ export const AndroidHeader: React.FC = () => {
           {/* Tên ứng dụng có chiều rộng cố định theo mức thu nhỏ nhất của khung Tiếng Trung */}
           <div 
             ref={brandRef}
-            onClick={() => handleSelectNav('translate', 'Dịch nhanh')}
             style={brandWidth === null ? undefined : { width: brandWidth }}
-            className="flex w-14 @min-[768px]/app:w-auto min-w-0 shrink-0 items-center gap-1.5 cursor-pointer group select-none"
+            className="flex w-14 @min-[768px]/app:w-auto min-w-0 shrink-0 items-center gap-1.5 select-none"
           >
-            <h1 className="truncate text-sm font-semibold tracking-tight text-main leading-tight group-hover:text-accent transition-colors">
+            <h1 className="truncate text-sm font-semibold tracking-tight text-main leading-tight">
               Hermes
             </h1>
           </div>
@@ -431,28 +416,17 @@ export const AndroidHeader: React.FC = () => {
             <div className="text-xs text-muted mb-1.5">Phông chữ:</div>
             <div className="grid grid-cols-2 gap-1.5 text-xs">
               <button
-                onClick={() => updateSettings({ fontFamily: 'sans' })}
-                className={`py-1.5 px-2 rounded-lg border font-sans text-center transition-colors cursor-pointer ${
-                  settings.fontFamily === 'sans'
+                onClick={() => updateSettings({ fontFamily: 'reading' })}
+                className={`py-1.5 px-2 rounded-lg border font-ui text-center transition-colors cursor-pointer ${
+                  settings.fontFamily === 'reading'
                     ? 'bg-raised border-accent/60 text-accent font-medium shadow-xs'
                     : 'bg-surface/60 border-line text-muted hover:text-main'
                 }`}
                 title="Phông Sans-Serif"
               >
-                Sans-Serif
+                Noto Sans / CJK
               </button>
 
-              <button
-                onClick={() => updateSettings({ fontFamily: 'serif' })}
-                className={`py-1.5 px-2 rounded-lg border font-serif text-center transition-colors cursor-pointer ${
-                  settings.fontFamily === 'serif'
-                    ? 'bg-raised border-accent/60 text-accent font-medium shadow-xs'
-                    : 'bg-surface/60 border-line text-muted hover:text-main'
-                }`}
-                title="Phông Serif"
-              >
-                Serif
-              </button>
             </div>
           </div>
 
@@ -611,7 +585,7 @@ export const AndroidHeader: React.FC = () => {
           />
 
           {/* Nội dung Ngăn kéo trượt sang trọng phong cách Google AI Studio */}
-          <div className="studio-drawer relative w-72 max-w-[90%] h-full bg-surface border-r border-line flex flex-col justify-between z-10 text-main overflow-hidden font-sans">
+          <div className="studio-drawer relative w-72 max-w-[90%] h-full bg-surface border-r border-line flex flex-col justify-between z-10 text-main overflow-hidden font-ui">
             
             {/* VÙNG CUỘN NỘI DUNG CHÍNH (DRAWER SCROLLABLE BODY) */}
             <div role="navigation" aria-label="Điều hướng chính" className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-5 scrollbar-thin scrollbar-thumb-neutral-800">
@@ -619,17 +593,16 @@ export const AndroidHeader: React.FC = () => {
               {/* Drawer Top Header: Logo + Toggle Collapse Icon */}
               <div className="flex items-center justify-between pb-3.5 border-b border-line/80">
                 <div 
-                  onClick={() => { setActiveTab('translate'); setIsDrawerOpen(false); }}
-                  className="flex items-center gap-2.5 cursor-pointer group select-none"
+                  className="flex items-center gap-2.5 select-none"
                 >
                   <img src="/assets/icons/icon-192.webp" alt="" className="h-10 w-10 shrink-0 rounded-full object-cover ring-1 ring-line" />
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <h2 className="text-base font-bold text-main tracking-tight group-hover:text-accent transition-colors">
+                      <h2 className="text-base font-bold text-main tracking-tight">
                         Hermes
                       </h2>
                       <span className="text-[10px] text-muted font-normal">
-                        1.1
+                        1.2
                       </span>
                     </div>
                   </div>
@@ -817,20 +790,19 @@ export const AndroidHeader: React.FC = () => {
               {isNotificationsOpen && (
                 <div id="notifications-panel" role="region" aria-label="Thông báo" className="absolute inset-x-0 bottom-full mb-2 z-50 w-full max-w-full max-h-[min(24rem,calc(100dvh-2rem))] overflow-x-hidden overflow-y-auto overscroll-contain p-2 rounded-2xl bg-surface border border-line shadow-xl space-y-2 text-xs">
                   <div className="flex min-w-0 items-center justify-between gap-2 pb-1.5 border-b border-line">
-                    <span className="min-w-0 truncate font-semibold text-main">Thông báo</span>
-                    <button aria-label="Đóng thông báo" onClick={() => setIsNotificationsOpen(false)} className="text-muted hover:text-main">
-                      <X size={13} />
-                    </button>
-                  </div>
-                  <div className="flex items-start gap-3 rounded-xl bg-raised/70 p-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-canvas text-muted">
-                      <Bell size={18} />
-                    </span>
-                    <div className="min-w-0 flex-1 pt-0.5">
-                      <p className="truncate text-xs font-medium text-main">Chưa có thông báo</p>
-                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted">Thông báo mới sẽ hiển thị ở đây.</p>
+                    <span className="min-w-0 truncate font-semibold text-main">Thông báo ({background.notifications.length})</span>
+                    <div className="flex items-center gap-2">
+                      {background.notifications.length > 0 && <button type="button" onClick={background.clearNotifications} className="text-[11px] text-muted hover:text-main">Xóa hết</button>}
+                      <button aria-label="Đóng thông báo" onClick={() => setIsNotificationsOpen(false)} className="text-muted hover:text-main"><X size={13} /></button>
                     </div>
                   </div>
+                  {background.notifications.length === 0 ? <div className="flex items-center gap-3 rounded-xl bg-raised/70 p-3 text-muted"><Bell size={17} /><span>Chưa có thông báo</span></div> : background.notifications.map(notification => {
+                    const Icon = notification.error ? AlertCircle : CheckCircle2;
+                    return <div key={notification.id} className="flex items-start gap-2.5 rounded-xl border border-line/70 bg-raised/40 p-2.5">
+                      <Icon size={15} className={`mt-0.5 shrink-0 ${notification.error ? 'text-danger' : 'text-accent'}`} />
+                      <div className="min-w-0 flex-1"><p className="break-words leading-relaxed text-main">{notification.text}</p><time className="mt-1 block text-[10px] text-muted">{new Intl.DateTimeFormat('vi-VN', { hour: '2-digit', minute: '2-digit' }).format(notification.createdAt)}</time></div>
+                    </div>;
+                  })}
                 </div>
               )}
 
@@ -838,7 +810,7 @@ export const AndroidHeader: React.FC = () => {
                 {/* 1. Nút Thông báo */}
                 <button
                   onClick={() => { setIsNotificationsOpen(prev => !prev); setIsSearchOpen(false); }}
-                  className={`h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
+                  className={`relative h-9 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
                     isNotificationsOpen 
                       ? 'bg-raised border-line text-main shadow-xs' 
                       : 'bg-surface border-line text-muted hover:text-main hover:bg-raised'
@@ -849,6 +821,7 @@ export const AndroidHeader: React.FC = () => {
                   aria-controls="notifications-panel"
                 >
                   <Bell size={16} />
+                  {background.notifications.length > 0 && <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-accent" />}
                 </button>
 
                 {/* 2. NÚT CÀI ĐẶT (Được đặt trực tiếp trên phần tài khoản) */}

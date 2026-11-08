@@ -24,6 +24,8 @@ app.whenReady().then(async () => {
   try {
     await waitFor(() => main && !main.webContents.isLoading() && main.webContents.getURL().startsWith('http'));
     assert.equal(await main.webContents.executeJavaScript('typeof window.hermesSourceBrowser?.open'), 'function');
+    assert.equal(await main.webContents.executeJavaScript('typeof window.hermesFileSystem?.chooseDirectory'), 'function');
+    assert.equal(await main.webContents.executeJavaScript('typeof window.hermesFileSystem?.writeFile'), 'function');
     const origin = `http://127.0.0.1:${fixture.address().port}`;
     const capture = async route => {
       const pending = main.webContents.executeJavaScript(`window.hermesSourceBrowser.open(${JSON.stringify(origin + route)})`);
@@ -37,12 +39,16 @@ app.whenReady().then(async () => {
       return pending;
     };
     assert.match((await capture('/first')).html, /first page/);
+    const windowsBeforeFetch = BrowserWindow.getAllWindows().length;
+    const fetched = await main.webContents.executeJavaScript(`window.hermesSourceBrowser.fetch(${JSON.stringify(origin + '/second')})`);
+    assert.match(fetched.html, /reader_session=verified/);
+    assert.equal(BrowserWindow.getAllWindows().length, windowsBeforeFetch);
     assert.match((await capture('/second')).html, /reader_session=verified/);
     const pending = main.webContents.executeJavaScript(`window.hermesSourceBrowser.open(${JSON.stringify(origin + '/close')}).then(()=>false,()=>true)`);
     const reader = await waitFor(() => BrowserWindow.getAllWindows().find(window => window !== main));
     reader.close();
     assert.equal(await pending, true);
-    console.log('PASS desktop capture, session retention, remote-page isolation and close cancellation');
+    console.log('PASS desktop capture, silent session fetch, cookie retention, remote-page isolation and close cancellation');
     clearTimeout(timeout); fixture.close(); app.exit(0);
   } catch (error) { console.error(error); clearTimeout(timeout); fixture.close(); app.exit(1); }
 });

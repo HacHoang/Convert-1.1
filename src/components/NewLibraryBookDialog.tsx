@@ -30,7 +30,7 @@ export function NewLibraryBookDialog({ initialTitle, chapterCount, busy, onConfi
       </header>
       <fieldset disabled={busy} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 text-sm">
         <p className="text-muted">Nhập thông tin truyện để lưu {chapterCount} chương đã dịch vào thư viện.</p>
-        <label className="block">Tên truyện <span className="text-accent">*</span><input autoFocus required value={title} onChange={event => setTitle(event.target.value)} className={field} /></label>
+        <label className="block">Tên truyện <span className="text-accent">*</span><input autoFocus required value={title} onChange={event => setTitle(event.target.value)} placeholder="Nhập tên truyện…" className={field} /></label>
         <label className="block">Tên gốc<input value={originalTitle} onChange={event => setOriginalTitle(event.target.value)} className={field} /></label>
         <label className="block">Tác giả<input value={author} onChange={event => setAuthor(event.target.value)} className={field} /></label>
         <label className="block">Thể loại<input value={genres} onChange={event => setGenres(event.target.value)} placeholder="Ví dụ: Tiên hiệp, Huyền huyễn" className={field} /><span className="text-xs text-muted">Phân cách các thể loại bằng dấu phẩy.</span></label>

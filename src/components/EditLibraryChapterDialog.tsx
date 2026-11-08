@@ -21,7 +21,7 @@ export function EditLibraryChapterDialog({ chapter, onSave, onClose }: {
           <label className="block">Nguyên văn<textarea aria-label="Nguyên văn" value={originalText} onChange={event => setOriginalText(event.target.value)} rows={14} className="mt-1 w-full resize-y rounded-lg border border-line bg-canvas p-3 leading-relaxed" /></label>
           <label className="block">Bản dịch<textarea aria-label="Bản dịch" value={vietphraseText} onChange={event => setVietphraseText(event.target.value)} rows={14} className="mt-1 w-full resize-y rounded-lg border border-line bg-canvas p-3 leading-relaxed" /></label>
         </div>
-        {error && <p role="alert" className="text-rose-400">{error}</p>}
+        <p role="alert" className="min-h-5 truncate text-rose-400" title={error || undefined}>{error}</p>
       </fieldset>
       <footer className="flex shrink-0 justify-end gap-2 border-t border-line p-4"><button type="button" disabled={busy} onClick={onClose} className="studio-action">Hủy</button><button type="submit" disabled={busy || !title.trim()} className="studio-action studio-action-primary">{busy ? 'Đang lưu…' : 'Lưu thay đổi'}</button></footer>
     </form>

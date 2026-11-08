@@ -1,7 +1,8 @@
 type Chapter = { id: string; chapterNum: number; rawTitle: string };
+export type ChapterExportFormat = 'txt' | 'docx' | 'epub' | 'pdf';
 
 /** Stable names for explicit parts; also protect unlabelled duplicate chapter numbers. */
-export function chapterFileNames(chapters: Chapter[], format: 'txt' | 'docx'): Map<string, string> {
+export function chapterFileNames(chapters: Chapter[], format: ChapterExportFormat): Map<string, string> {
   const counts = new Map<number, number>();
   chapters.forEach(chapter => counts.set(chapter.chapterNum, (counts.get(chapter.chapterNum) || 0) + 1));
   const occurrences = new Map<number, number>();
